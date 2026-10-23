@@ -1,0 +1,1 @@
+{"identifier":"default","description":"Only core application commands; no filesystem or shell plugin exposed to the webview.","windows":["main"],"permissions":["core:default","dialog:default"]}

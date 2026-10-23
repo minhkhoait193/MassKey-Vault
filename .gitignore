@@ -1,0 +1,49 @@
+# Frontend dependencies and build outputs
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Tauri / Rust build outputs (keep Cargo.lock for reproducible app builds)
+src-tauri/target/
+target/
+
+# Local credentials, personal vaults, encrypted vault backups and exports
+*.nvault
+*.nvault.*
+*.vault
+*.vault.*
+*.bak
+*.backup
+*.backup.*
+*.zip
+*.7z
+*.pfx
+*.p12
+*.pem
+*.key
+*.kdbx
+.env
+.env.*
+!.env.example
+
+# OS / editor / temporary files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+*.log
+npm-debug.log*
+
+# Release bundles, executables and generated checksum files
+*.exe
+*.msi
+SHA256SUMS.txt
+
+# Note: release installers must be attached to GitHub Releases,
+# never committed to the source repository.

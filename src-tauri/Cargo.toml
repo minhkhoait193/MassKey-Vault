@@ -1,0 +1,34 @@
+[package]
+name = "masskey-vault"
+version = "1.2.0"
+description = "MassKey Vault — offline encrypted password vault"
+authors = ["MassKey Vault"]
+edition = "2021"
+rust-version = "1.88"
+
+[lib]
+name = "masskey_vault_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "=2.5.0"
+url = "2.5"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+rand = "0.8"
+zeroize = "1.8"
+base64 = "0.22"
+hex = "0.4"
+zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "deflate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
