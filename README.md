@@ -12,10 +12,6 @@
 3. Run the installer and launch **MassKey Vault** from the desktop or Start Menu.
 4. Create a master password (minimum **12 characters**) and **save your recovery key offline**.
 
-**No Rust, Node.js, Visual Studio Build Tools, or Tauri installation is required for end users.** Windows WebView2 Runtime is required; the installer can provision it if absent (an internet connection may be needed for initial installation). The vault itself operates locally without a cloud account.
-
-**Windows SmartScreen:** Unsigned preview installers can trigger a warning. Do not bypass security warnings unless you have independently verified the downloaded file and trust the source. You can compare the SHA-256 checksum against the release's `SHA256SUMS.txt`.
-
 ## Features
 
 - Offline encrypted vault with a master password, emergency recovery key, and manual lock.
@@ -60,12 +56,6 @@ Or use `run_windows.bat` to run a development build and `build_windows.bat` for 
 
 Use **synthetic test credentials only** until a security audit and full Windows tests have been completed.
 
-### Keep dependency versions reproducible
-
-Before the first GitHub push, run `prepare_github_windows.bat` once. It generates **`package-lock.json` and `src-tauri/Cargo.lock`**, runs the frontend build and Rust tests, and leaves both lockfiles ready to commit. GitHub Actions intentionally requires both lockfiles and uses `npm ci` / `cargo test --locked`.
-
-Do not commit your actual vault, exported ZIP backups, recovery key, master password, `.env` secrets, `node_modules`, Rust `target`, or `dist` directories.
-
 ## Update or transfer an existing vault
 
 1. **Close MassKey Vault and back up your current data file** before updating or experimenting.
@@ -74,12 +64,6 @@ Do not commit your actual vault, exported ZIP backups, recovery key, master pass
 4. Verify the restored accounts using **test-only** data first.
 
 The existing **MassKey** format remains version 1 in this codebase. Migration from older *Nocturne Vault* formats is **not guaranteed** without a compatible converter. Never delete the only working copy.
-
-## GitHub Releases (maintainers)
-
-Release automation builds the unsigned Windows installer on GitHub-hosted Windows runners and creates a **draft prerelease** when a tag matching `v1.2.0-beta.1` is pushed. It is **not publicly published automatically**.
-
-See [docs/RELEASING.md](docs/RELEASING.md) for the precise first-push, tag, review, and publishing steps. Release assets are the NSIS installer and `SHA256SUMS.txt`. Do not upload a personal vault or development `.bat` as end-user downloads.
 
 ## Contributing and disclosure
 
