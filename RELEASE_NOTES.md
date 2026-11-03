@@ -1,4 +1,4 @@
-# MassKey Vault v1.2.0 Beta — Windows
+# MassKey Vault v1.3.0 Beta — Windows
 
 **Development preview — do not use with important or irreplaceable credentials.** This build has not passed an independent security audit or Windows code signing.
 
@@ -10,6 +10,10 @@
 - Custom categories, icons, website links and local password-health guidance.
 - Master password, recovery key, configurable auto-lock and optional reauthentication.
 - AES-256 encrypted ZIP export/import, including drag-and-drop restore.
+- Windows session lock and suspend/resume vault locking.
+- Verified backup preview and explicit confirmation before import.
+- Encrypted account trash with manual restore and no automatic purge.
+- Faster password reauthentication without decrypting the entire vault again.
 - NSIS Windows installer with Desktop and Start Menu shortcuts.
 
 ## Install

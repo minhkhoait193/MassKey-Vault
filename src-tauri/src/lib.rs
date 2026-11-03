@@ -1,6 +1,6 @@
 //! MassKey Vault (v1.2 development preview). Security-critical paths require independent audit
 //! before storing irreplaceable credentials. Never log secrets.
-use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
+use std::{fs::{self, File, OpenOptions}, io::{Read, Write}, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use chacha20poly1305::{aead::{Aead, KeyInit, Payload}, Key, XChaCha20Poly1305, XNonce};
@@ -10,6 +10,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
+use sha2::{Digest, Sha256};
 
 const VERSION: u32 = 1;
 const MEMORY_KIB: u32 = 65536;
@@ -56,6 +57,7 @@ impl Default for VaultSettings {
 #[serde(deny_unknown_fields)]
 struct VaultData {
     categories: Vec<Category>, accounts: Vec<Account>, settings: VaultSettings,
+    #[serde(default)] trash: Vec<Account>,
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
@@ -93,13 +95,61 @@ impl Drop for Session {
             a.username.zeroize(); a.password.zeroize(); a.website.zeroize();
             a.notes.zeroize(); a.icon.zeroize();
         }
+        for a in &mut self.data.trash {
+            a.id.zeroize(); a.category_id.zeroize(); a.title.zeroize();
+            a.username.zeroize(); a.password.zeroize(); a.website.zeroize();
+            a.notes.zeroize(); a.icon.zeroize();
+        }
         for c in &mut self.data.categories {
             c.id.zeroize(); c.name.zeroize(); c.icon.zeroize(); c.color.zeroize();
         }
     }
 }
-#[derive(Default)]
-struct VaultState(Mutex<Option<Session>>);
+struct VaultState(Arc<Mutex<Option<Session>>>);
+impl Default for VaultState { fn default() -> Self { Self(Arc::new(Mutex::new(None))) } }
+
+#[cfg(windows)]
+mod windows_lock {
+    use super::*;
+    use std::{cell::RefCell, mem::zeroed, ptr::{null, null_mut}, sync::mpsc, thread};
+    use windows_sys::Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, WPARAM},
+        System::{LibraryLoader::GetModuleHandleW, RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION}},
+        UI::WindowsAndMessaging::{CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
+            RegisterClassW, TranslateMessage, MSG, WNDCLASSW, WM_POWERBROADCAST,
+            WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK, PBT_APMSUSPEND, PBT_APMRESUMEAUTOMATIC,
+            PBT_APMRESUMESUSPEND},
+    };
+    thread_local! { static STATE: RefCell<Option<Arc<Mutex<Option<Session>>>>> = const { RefCell::new(None) }; }
+    unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if (message==WM_WTSSESSION_CHANGE && wparam==WTS_SESSION_LOCK as usize)
+            || (message==WM_POWERBROADCAST && [PBT_APMSUSPEND,PBT_APMRESUMEAUTOMATIC,PBT_APMRESUMESUSPEND].contains(&(wparam as u32))) {
+            STATE.with(|cell| { if let Some(state)=cell.borrow().as_ref() { if let Ok(mut guard)=state.lock() { *guard=None; } } });
+        }
+        DefWindowProcW(hwnd,message,wparam,lparam)
+    }
+    pub fn start(state: Arc<Mutex<Option<Session>>>) -> Result<(),String> {
+        let (tx,rx)=mpsc::sync_channel(1);
+        thread::Builder::new().name("windows-vault-lock".into()).spawn(move || unsafe {
+            STATE.with(|cell| *cell.borrow_mut()=Some(state));
+            let class: Vec<u16>="MassKeyVaultLockEvents\0".encode_utf16().collect();
+            let instance=GetModuleHandleW(null());
+            if instance.is_null() { let _=tx.send(Err("Không thể lấy module Windows".to_string())); return; }
+            let descriptor=WNDCLASSW { lpfnWndProc:Some(window_proc), lpszClassName:class.as_ptr(), hInstance:instance, ..zeroed() };
+            if RegisterClassW(&descriptor)==0 { let _=tx.send(Err("Không thể đăng ký sự kiện Windows".to_string())); return; }
+            // A hidden top-level window receives session and power broadcasts.
+            let hwnd=CreateWindowExW(0,class.as_ptr(),class.as_ptr(),0,0,0,0,0,null_mut(),null_mut(),instance,null());
+            if hwnd.is_null() { let _=tx.send(Err("Không thể tạo cửa sổ nhận sự kiện Windows".to_string())); return; }
+            if WTSRegisterSessionNotification(hwnd,NOTIFY_FOR_THIS_SESSION)==0 {
+                let _=tx.send(Err("Không thể theo dõi khóa phiên Windows".to_string())); return;
+            }
+            let _=tx.send(Ok(()));
+            let mut message: MSG=zeroed();
+            while GetMessageW(&mut message,null_mut(),0,0)>0 { TranslateMessage(&message); DispatchMessageW(&message); }
+        }).map_err(err)?;
+        rx.recv_timeout(Duration::from_secs(5)).map_err(|_|"Không nhận được xác nhận theo dõi sự kiện Windows".to_string())?
+    }
+}
 
 fn err<E: std::fmt::Display>(_: E) -> String { "Không thể thực hiện thao tác. Kiểm tra mật khẩu, định dạng file hoặc quyền truy cập.".into() }
 fn storage_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -315,7 +365,10 @@ fn get_password(state: State<'_, VaultState>, account_id: String, reauth_passwor
     let secret = Zeroizing::new(reauth_password.unwrap_or_default());
     with_session(&state, |s| {
         if s.data.settings.require_reauth {
-            let (verified, _) = unwrap_file(&s.file, &secret, false)?;
+            let raw = B64.decode(&s.file.salt).map_err(err)?;
+            let salt: [u8; 16] = raw.as_slice().try_into().map_err(err)?;
+            let key = derive_key(&secret, &salt)?;
+            let verified = bytes32(&open_sealed(&key, &s.file.master_wrap, AAD_MASTER)?)?;
             if *verified != *s.dek { return Err("Xác thực thất bại".into()); }
         }
         s.data.accounts.iter().find(|a| a.id == account_id).map(|a| a.password.clone()).ok_or("Không tìm thấy tài khoản".into())
@@ -415,7 +468,7 @@ fn generate_similar_password(original: String) -> Result<String, String> {
 #[tauri::command]
 fn delete_category(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
     with_session(&state, |s| {
-        if s.data.accounts.iter().any(|a| a.category_id == id) { return Err("Chuyển tài khoản sang danh mục khác trước khi xóa.".into()); }
+        if s.data.accounts.iter().chain(s.data.trash.iter()).any(|a| a.category_id == id) { return Err("Chuyển hoặc xóa vĩnh viễn tài khoản liên quan trước khi xóa danh mục.".into()); }
         s.data.categories.retain(|c| c.id != id);
         persist_session(&app,s)
     })
@@ -449,10 +502,35 @@ fn upsert_account(app: AppHandle, state: State<'_, VaultState>, account: Account
 fn delete_account(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
     with_session(&state, |s| {
         if let Some(pos)=s.data.accounts.iter().position(|a|a.id==id) {
-            let mut gone=s.data.accounts.remove(pos); gone.password.zeroize(); gone.notes.zeroize();
+            let mut next=s.data.clone();
+            next.trash.push(next.accounts.remove(pos));
+            let file=encrypt_file(&s.dek,&next,s.file.clone())?;
+            write_vault(&storage_path(&app)?,&file)?;
+            s.data=next; s.file=file; s.last_activity=Instant::now();
         }
-        persist_session(&app,s)
+        Ok(())
     })
+}
+#[tauri::command]
+fn restore_account(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    with_session(&state, |s| {
+        let pos=s.data.trash.iter().position(|a|a.id==id).ok_or("Không tìm thấy tài khoản trong thùng rác")?;
+        let mut next=s.data.clone();
+        let mut account=next.trash.remove(pos);
+        if next.accounts.iter().any(|a|a.id==account.id) { account.id=Uuid::new_v4().to_string(); }
+        next.accounts.push(account);
+        let file=encrypt_file(&s.dek,&next,s.file.clone())?;
+        write_vault(&storage_path(&app)?,&file)?;
+        s.data=next; s.file=file; s.last_activity=Instant::now();
+        Ok(())
+    })
+}
+#[tauri::command]
+fn trash_snapshot(state: State<'_, VaultState>) -> Result<serde_json::Value,String> {
+    with_session(&state, |s| serde_json::to_value(s.data.trash.iter().map(|a| PublicAccount {
+        id:&a.id,category_id:&a.category_id,title:&a.title,username:&a.username,
+        website:&a.website,notes:&a.notes,icon:&a.icon,
+    }).collect::<Vec<_>>()).map_err(err))
 }
 #[tauri::command]
 fn update_settings(app: AppHandle, state: State<'_, VaultState>, auto_lock_seconds: u64, clipboard_seconds: u64, lock_on_minimize: bool, require_reauth: bool, warn_weak_passwords: bool, vault_health: bool) -> Result<(),String> {
@@ -535,42 +613,105 @@ fn read_zip(path: &Path, zip_password: &str) -> Result<VaultFile,String> {
     file.by_ref().take(MAX_VAULT_BYTES+1).read_to_end(&mut bytes).map_err(err)?;
     parse_vault(&bytes)
 }
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+struct ImportPreview { added: usize, unchanged: usize, conflicts_as_new: usize, replaced: usize, trash_added: usize, invalid: usize, fingerprint: String }
+fn import_fingerprint(source: &VaultFile, target: Option<&VaultFile>, mode: &str) -> Result<String,String> {
+    let mut hash=Sha256::new();
+    hash.update(serde_json::to_vec(source).map_err(err)?);
+    if let Some(file)=target { hash.update(serde_json::to_vec(file).map_err(err)?); }
+    hash.update(mode.as_bytes());
+    Ok(hex::encode(hash.finalize()))
+}
+fn validate_import(data: &VaultData) -> Result<(),String> {
+    let mut ids=std::collections::HashSet::new();
+    let mut categories=std::collections::HashSet::new();
+    for c in &data.categories { if !categories.insert(&c.id) {return Err("Bản sao có mã danh mục trùng".into());} }
+    for a in data.accounts.iter().chain(data.trash.iter()) {
+        if !ids.insert(&a.id) || (!a.category_id.is_empty() && !categories.contains(&a.category_id)) {
+            return Err("Bản sao có tài khoản trùng mã hoặc thiếu danh mục".into());
+        }
+    }
+    Ok(())
+}
+fn preview_counts(source: &VaultData, target: Option<&VaultData>, mode: &str, fingerprint: String) -> ImportPreview {
+    if mode=="replace" { return ImportPreview {added:source.accounts.len(),unchanged:0,conflicts_as_new:0,replaced:target.map(|d|d.accounts.len()).unwrap_or(0),trash_added:source.trash.len(),invalid:0,fingerprint}; }
+    let mut p=ImportPreview {added:0,unchanged:0,conflicts_as_new:0,replaced:0,trash_added:source.trash.len(),invalid:0,fingerprint};
+    for a in &source.accounts {
+        let category_remapped=source.categories.iter().find(|c|c.id==a.category_id)
+            .and_then(|c|target.and_then(|d|d.categories.iter().find(|t|t.id==c.id).map(|t|t.name!=c.name || t.icon!=c.icon || t.color!=c.color)))
+            .unwrap_or(false);
+        match target.and_then(|d|d.accounts.iter().find(|b|b.id==a.id)) {
+            None=>p.added+=1,
+            Some(b) if !category_remapped && b.category_id==a.category_id && b.title==a.title && b.username==a.username && b.password==a.password && b.website==a.website && b.notes==a.notes && b.icon==a.icon=>p.unchanged+=1,
+            Some(_)=>p.conflicts_as_new+=1,
+        }
+    }
+    p
+}
+#[tauri::command]
+fn preview_import_zip(app: AppHandle, state: State<'_,VaultState>, source: String, zip_password: String,
+    source_secret: String, recovery_mode: bool, mode: String) -> Result<ImportPreview,String> {
+    if mode!="merge" && mode!="replace" { return Err("Chế độ nhập không hợp lệ".into()); }
+    let file=read_zip(&PathBuf::from(source),&Zeroizing::new(zip_password))?;
+    let (_,imported)=unwrap_file(&file,&Zeroizing::new(source_secret),recovery_mode)?;
+    validate_import(&imported)?;
+    let path=storage_path(&app)?;
+    let target_file=if path.exists() {Some(read_vault(&path)?)} else {None};
+    let target=state.0.lock().map_err(err)?;
+    if path.exists() && target.is_none() {return Err("Mở khóa vault hiện tại trước khi xem trước bản nhập".into());}
+    let fingerprint=import_fingerprint(&file,target_file.as_ref(),&mode)?;
+    Ok(preview_counts(&imported,target.as_ref().map(|s|&s.data),&mode,fingerprint))
+}
 #[tauri::command]
 fn import_zip(app: AppHandle, state: State<'_,VaultState>, source: String, zip_password: String,
-    source_secret: String, recovery_mode: bool, new_master_password: Option<String>, mode: String) -> Result<usize,String> {
+    source_secret: String, recovery_mode: bool, new_master_password: Option<String>, mode: String, expected_fingerprint: String) -> Result<usize,String> {
     let zp=Zeroizing::new(zip_password);
     let source_secret=Zeroizing::new(source_secret);
     let file=read_zip(&PathBuf::from(source),&zp)?;
     let (source_dek, mut imported)=unwrap_file(&file,&source_secret,recovery_mode)?;
+    validate_import(&imported)?;
     let path=storage_path(&app)?;
     let mut guard=state.0.lock().map_err(err)?;
+    let target_file=if path.exists() {Some(read_vault(&path)?)} else {None};
+    if import_fingerprint(&file,target_file.as_ref(),&mode)? != expected_fingerprint {return Err("Bản sao hoặc vault đã thay đổi. Hãy xem trước lại.".into());}
     let is_unlocked=guard.as_ref().map(|s|s.last_activity.elapsed() < Duration::from_secs(s.data.settings.auto_lock_seconds)).unwrap_or(false);
     if !is_unlocked { *guard=None; }
     let count=imported.accounts.len();
     if path.exists() && mode=="merge" {
         let target=guard.as_mut().ok_or("Phải mở khóa vault hiện tại để gộp dữ liệu.")?;
+        let mut next=target.data.clone();
         // Avoid UUID collisions that could associate imported accounts with
         // the wrong category or silently lose a distinct imported account.
         let mut remap=std::collections::HashMap::<String,String>::new();
         for mut cat in imported.categories.drain(..) {
-            if let Some(existing)=target.data.categories.iter().find(|c|c.id==cat.id) {
+            if let Some(existing)=next.categories.iter().find(|c|c.id==cat.id) {
                 if existing.name!=cat.name || existing.icon!=cat.icon || existing.color!=cat.color {
                     let previous=cat.id.clone(); cat.id=Uuid::new_v4().to_string();
-                    remap.insert(previous,cat.id.clone());target.data.categories.push(cat);
+                    remap.insert(previous,cat.id.clone());next.categories.push(cat);
                 }
-            } else {target.data.categories.push(cat);}
+            } else {next.categories.push(cat);}
         }
         for mut acc in imported.accounts.drain(..) {
             if let Some(new_id)=remap.get(&acc.category_id) {acc.category_id=new_id.clone();}
-            if let Some(existing)=target.data.accounts.iter().find(|a|a.id==acc.id) {
+            if let Some(existing)=next.accounts.iter().find(|a|a.id==acc.id) {
                 if existing.title!=acc.title || existing.username!=acc.username ||
                    existing.password!=acc.password || existing.website!=acc.website ||
-                   existing.notes!=acc.notes || existing.category_id!=acc.category_id {
-                    acc.id=Uuid::new_v4().to_string(); target.data.accounts.push(acc);
+                    existing.notes!=acc.notes || existing.category_id!=acc.category_id || existing.icon!=acc.icon {
+                    acc.id=Uuid::new_v4().to_string(); next.accounts.push(acc);
                 }
-            } else {target.data.accounts.push(acc);}
+            } else {next.accounts.push(acc);}
         }
-        persist_session(&app,target)?;
+        for mut acc in imported.trash.drain(..) {
+            if let Some(new_id)=remap.get(&acc.category_id) {acc.category_id=new_id.clone();}
+            if next.accounts.iter().chain(next.trash.iter()).any(|a|a.id==acc.id) {
+                acc.id=Uuid::new_v4().to_string();
+            }
+            next.trash.push(acc);
+        }
+        let file=encrypt_file(&target.dek,&next,target.file.clone())?;
+        write_vault(&path,&file)?;
+        target.data=next; target.file=file; target.last_activity=Instant::now();
         return Ok(count);
     }
     if mode!="replace" && mode!="merge" {return Err("Chế độ khôi phục không hợp lệ".into());}
@@ -625,10 +766,36 @@ mod tests {
         vault.version=99;
         assert!(parse_vault(&serde_json::to_vec(&vault).unwrap()).is_err());
     }
+    #[test]
+    fn legacy_vault_data_and_import_preview() {
+        let old=r#"{"categories":[],"accounts":[],"settings":{"auto_lock_seconds":180,"clipboard_seconds":25}}"#;
+        let data: VaultData=serde_json::from_str(old).unwrap();
+        assert!(data.trash.is_empty());
+        let a=Account{id:"a".into(),category_id:String::new(),title:"Test".into(),username:String::new(),password:"secret".into(),website:String::new(),notes:String::new(),icon:"✦".into()};
+        let source=VaultData{accounts:vec![a.clone()],..VaultData::default()};
+        let mut target=VaultData{accounts:vec![a],..VaultData::default()};
+        let p=preview_counts(&source,Some(&target),"merge",String::new());
+        assert_eq!((p.added,p.unchanged,p.conflicts_as_new),(0,1,0));
+        target.accounts[0].password="different".into();
+        let p=preview_counts(&source,Some(&target),"merge",String::new());
+        assert_eq!((p.added,p.unchanged,p.conflicts_as_new),(0,0,1));
+        let p=preview_counts(&source,Some(&target),"replace",String::new());
+        assert_eq!((p.added,p.replaced),(1,1));
+        let (file,_,_)=make_file("a-very-long-test-master-password",&source).unwrap();
+        assert_ne!(import_fingerprint(&file,None,"merge").unwrap(),import_fingerprint(&file,None,"replace").unwrap());
+        assert_ne!(import_fingerprint(&file,None,"merge").unwrap(),import_fingerprint(&file,Some(&file),"merge").unwrap());
+        let mut invalid=source.clone(); invalid.accounts[0].category_id="missing".into();
+        assert!(validate_import(&invalid).is_err());
+    }
 }
 
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(windows)]
+            windows_lock::start(app.state::<VaultState>().0.clone()).map_err(std::io::Error::other)?;
+            Ok(())
+        })
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(window)=app.get_webview_window("main") {
                 let _=window.show(); let _=window.set_focus();
@@ -640,8 +807,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_status, create_vault, unlock_vault, recover_vault, rotate_recovery, lock_vault,
             touch_session, snapshot, get_password, upsert_category, delete_category,
-            upsert_account, delete_account, update_settings, change_master,
-            generate_password, generate_similar_password, vault_health, open_account_website, export_zip, import_zip
+            upsert_account, delete_account, restore_account, trash_snapshot, update_settings, change_master,
+            generate_password, generate_similar_password, vault_health, open_account_website, export_zip, preview_import_zip, import_zip
         ])
         .run(tauri::generate_context!())
         .expect("Failed to launch MassKey Vault");

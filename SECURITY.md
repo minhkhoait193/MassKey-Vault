@@ -2,7 +2,7 @@
 
 ## Project status
 
-MassKey Vault v1.2.0 is a **development beta**, not independently audited, code-signed, or certified. It should not be relied on for important or irreplaceable secrets until its cryptographic implementation, ZIP import, migration, OS integration, and threat model have undergone professional review and Windows end-to-end testing.
+MassKey Vault v1.3.0 is a **development beta**, not independently audited, code-signed, or certified. It should not be relied on for important or irreplaceable secrets until its cryptographic implementation, ZIP import, migration, OS integration, and threat model have undergone professional review and Windows end-to-end testing.
 
 ## Reporting a vulnerability
 

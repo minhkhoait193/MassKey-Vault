@@ -21,8 +21,9 @@ type Settings = { auto_lock_seconds: number; clipboard_seconds: number; lock_on_
 type HealthReport = { weak:string[]; reused:string[]; total:number };
 type Snapshot = { categories: Category[]; accounts: Account[]; settings: Settings };
 type Status = { exists: boolean; unlocked: boolean };
-type Tab = 'all' | 'category' | 'settings' | 'backup';
+type Tab = 'all' | 'category' | 'settings' | 'backup' | 'trash';
 type AccountDraft = { id?: string; title: string; categoryId: string; username: string; password: string; website: string; notes: string; icon: string };
+type ImportPreview = {added:number;unchanged:number;conflictsAsNew:number;replaced:number;trashAdded:number;invalid:number;fingerprint:string};
 const icons = ['✦','◈','✉','♧','☁','⌘','◎','◉','▣','◇','♛','☼','✳','♥','✿','⚙','▦','♟','♬','✈','🔐','🎮','🏦','💼','📨','🌐'];
 const colors = ['#9d82ff','#50cbb7','#e9b36f','#e78aab','#76a9fb','#b9a7ef'];
 const blank: AccountDraft = {title:'',categoryId:'',username:'',password:'',website:'',notes:'',icon:'✦'};
@@ -118,6 +119,7 @@ function App() {
   const [settingsWarn,setSettingsWarn] = useState(true);
   const [settingsHealth,setSettingsHealth] = useState(true);
   const [health,setHealth] = useState<HealthReport|null>(null);
+  const [trashed,setTrashed] = useState<Account[]>([]);
   const [reauthInput,setReauthInput] = useState('');
   const [generatorLength,setGeneratorLength] = useState(24);
   const [showWeakWarning,setShowWeakWarning] = useState(true);
@@ -152,7 +154,8 @@ function App() {
       setSettingsMin(!!data.settings.lock_on_minimize);setSettingsReauth(!!data.settings.require_reauth);
       setSettingsWarn(data.settings.warn_weak_passwords!==false);setSettingsHealth(data.settings.vault_health!==false);
       if(data.settings.vault_health!==false) api<HealthReport>('vault_health').then(setHealth).catch(()=>setHealth(null)); else setHealth(null);
-    } else { setSnap(defaultSnap);setHealth(null);setReauthInput('');setShownPassword('');setSelected(null);setTab('all');setModal(v=>v==='import'?v:'none'); }
+      api<Account[]>('trash_snapshot').then(setTrashed).catch(()=>setTrashed([]));
+    } else { setSnap(defaultSnap);setTrashed([]);setHealth(null);setReauthInput('');setShownPassword('');setSelected(null);setTab('all');setModal(v=>v==='import'?v:'none'); }
   },[]);
   useEffect(()=>{load().catch(e=>alert(errorText(e),true));},[load,alert]);
   useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('masskey-theme',theme);},[theme]);
@@ -238,8 +241,8 @@ function App() {
     setDraft(blank);setShowDraftPassword(false);setGeneratedDraft(false);setModal('none');await load();alert('Đã lưu tài khoản an toàn.');
   });
   const deleteAccount=(account:Account)=>{
-    if(!window.confirm(`Xóa tài khoản “${account.title}”? Hành động này không thể hoàn tác.`))return;
-    doWork(async()=>{await api('delete_account',{id:account.id});setModal('none');await load();alert('Đã xóa tài khoản.');});
+    if(!window.confirm(`Chuyển tài khoản “${account.title}” vào thùng rác?`))return;
+    doWork(async()=>{await api('delete_account',{id:account.id});setModal('none');await load();alert('Đã chuyển tài khoản vào thùng rác.');});
   };
   const editCategory=(category?:Category)=>{setCategoryDraft(category?{...category}:{name:'',icon:'◈',color:colors[0]});setModal('category');};
   const persistCategory=()=>doWork(async()=>{
@@ -269,9 +272,12 @@ function App() {
   const importBackup=()=>doWork(async()=>{
     if(importRecovery && (!status.exists || importMode==='replace') && importNewPass.length<12)throw new Error('Cần mật khẩu chính mới, tối thiểu 12 ký tự.');
     if(status.exists && !status.unlocked)throw new Error('Mở khóa vault hiện tại trước khi khôi phục dữ liệu.');
-    if(importMode==='replace' && status.exists && !window.confirm('THAY THẾ toàn bộ kho hiện tại? Bản cũ chỉ còn trong file backup của bạn.'))return;
+    const mode=status.exists?importMode:'replace';
+    const preview=await api<ImportPreview>('preview_import_zip',{source:zipPath,zipPassword,sourceSecret:sourcePass,recoveryMode:importRecovery,mode});
+    const summary=`Bản sao hợp lệ.\nThêm: ${preview.added}\nTrùng và bỏ qua: ${preview.unchanged}\nXung đột, thêm bản mới: ${preview.conflictsAsNew}\nTài khoản hiện có sẽ bị thay thế: ${preview.replaced}\nTài khoản đưa vào thùng rác: ${preview.trashAdded}\nKhông thể nhập: ${preview.invalid}\n\nXung đột giữ cả hai bản ghi. Chỉ ghi sau khi xác nhận. Tiếp tục?`;
+    if(!window.confirm(summary))return;
     const count=await api<number>('import_zip',{source:zipPath,zipPassword,sourceSecret:sourcePass,
-      recoveryMode:importRecovery,newMasterPassword:importRecovery?importNewPass:null,mode:status.exists?importMode:'replace'});
+      recoveryMode:importRecovery,newMasterPassword:importRecovery?importNewPass:null,mode,expectedFingerprint:preview.fingerprint});
     setZipPassword('');setSourcePass('');setImportNewPass('');setModal('none');await load();
     alert(`Khôi phục thành công. Bản sao có ${count} tài khoản.`);
   });
@@ -341,13 +347,14 @@ function App() {
       </div>
       <div className="sidebar-bottom"><p className="nav-caption">{t("KHÔNG GIAN")}</p>
         <button className={'nav-item '+(tab==='backup'?'active':'')} onClick={()=>setTab('backup')}><ArchiveRestore size={18}/>{t("Sao lưu & khôi phục")}</button>
+        <button className={'nav-item '+(tab==='trash'?'active':'')} onClick={()=>setTab('trash')}><Trash2 size={18}/>{t("Thùng rác")} <span className="nav-count">{trashed.length}</span></button>
         <button className={'nav-item '+(tab==='settings'?'active':'')} onClick={()=>setTab('settings')}><Settings2 size={18}/>{t("Bảo mật & cài đặt")}</button>
         <div className="security-card"><div className="secure-title"><span className="pulse-dot"/>{t("Kho đang mở khóa")}</div><small>{t("Mã hóa đầu cuối · Lưu cục bộ")}</small></div>
         <button className="lock-btn" onClick={lock}><Lock size={16}/>{t("Khóa ngay")}</button>
       </div>
     </aside>}
     <main className={'main-area '+(!status.unlocked?'main-auth':'')}>
-      <header className="topbar"><div className="topbar-left">{status.unlocked?<><span className="breadcrumb">MassKey</span><span className="breadcrumb-divider">/</span><strong>{tab==='settings'?t("Bảo mật"):tab==='backup'?t("Sao lưu"):tab==='category'?selectedCategory?.name:t("My vault")}</strong></>:<><img className="small-logo" src={logo} alt=""/><strong>MassKey Vault</strong></>}</div><div className="topbar-right"><span className="local-tag"><span className="local-dot"/>OFFLINE VAULT</span>{languagePicker}{themeButton}</div></header>
+      <header className="topbar"><div className="topbar-left">{status.unlocked?<><span className="breadcrumb">MassKey</span><span className="breadcrumb-divider">/</span><strong>{tab==='settings'?t("Bảo mật"):tab==='backup'?t("Sao lưu"):tab==='trash'?t("Thùng rác"):tab==='category'?selectedCategory?.name:t("My vault")}</strong></>:<><img className="small-logo" src={logo} alt=""/><strong>MassKey Vault</strong></>}</div><div className="topbar-right"><span className="local-tag"><span className="local-dot"/>OFFLINE VAULT</span>{languagePicker}{themeButton}</div></header>
       {(!status.unlocked) ? <section className="auth-screen"><div className="auth-aurora"/><div className="auth-content"><img src={logo} className="auth-logo" alt="MassKey Vault"/><p className="eyebrow">YOUR SECRETS. YOUR CONTROL.</p><h1>{!status.exists?t("Your vault starts here."):recoverMode?t("Recover your vault."):t("Welcome back.")}</h1><p className="auth-desc">{!status.exists?t("Tạo một không gian riêng tư chỉ bạn có thể mở."):t("Mọi bí mật của bạn đều được mã hóa trên thiết bị này.")}</p>
         <div className="auth-form">
           {recoverMode ? <><label>{t("RECOVERY KEY")}</label><textarea value={secret} onChange={e=>setSecret(e.target.value)} placeholder={t("Nhập Recovery Key đã lưu")} rows={3}/><label>{t("MASTER PASSWORD MỚI")}</label><input type="password" autoComplete="new-password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Ít nhất 12 ký tự"/><button className="primary wide" disabled={busy} onClick={recover}>{t("Khôi phục quyền truy cập")} <ArrowRight size={17}/></button><button className="plain-link" onClick={()=>setRecoverMode(false)}>{t("Quay lại mở khóa")}</button></>
@@ -360,7 +367,7 @@ function App() {
         </div><div className="auth-proof"><LockKeyhole size={15}/>Zero cloud · Local encryption · Private by design</div>
       </div></section>
       : <div className="scroll-area">
-        {tab==='all'||tab==='category' ? <div className="workspace animate-enter">
+        {tab==='trash' ? <div className="workspace animate-enter narrow"><h1>{t('Thùng rác')}</h1><p className="description">{t('Tài khoản trong thùng rác được giữ trong vault mã hóa cho đến khi bạn khôi phục. Không tự xóa.')}</p><div className="account-list">{trashed.map(a=><div className="action-panel" key={a.id}><div><strong>{a.title}</strong><p>{a.username}</p></div><button className="btn-outline" disabled={busy} onClick={()=>doWork(async()=>{await api('restore_account',{id:a.id});await load();alert('Đã khôi phục tài khoản.');})}>{t('Khôi phục')}</button></div>)}</div></div> : tab==='all'||tab==='category' ? <div className="workspace animate-enter">
           <div className="page-header"><div><p className="eyebrow">PERSONAL PASSWORD MANAGER</p><h1>{tab==='category'?selectedCategory?.name||t("Thư viện"):t("My vault")}<span className="header-dot">.</span></h1><p className="description">{t("Không gian bảo mật dành riêng cho những tài khoản quan trọng.")}</p></div><div className="header-actions">{tab==='category'&&<button title={t("Chỉnh sửa thư viện")} className="btn-outline" onClick={()=>selectedCategory&&editCategory(selectedCategory)}><Pencil size={15}/>{t("Sửa thư viện")}</button>}<button className="primary" onClick={()=>editAccount(null)}><Plus size={17}/>{t("Thêm tài khoản")}</button></div></div>
           <div className="hero-strip"><div className="hero-icon"><ShieldCheck size={27}/></div><div className="hero-body"><p>{t("ENCRYPTED COLLECTION")}</p><strong>{snap.accounts.length.toString().padStart(2,'0')} <span>{t("tài khoản được bảo vệ")}</span></strong><small>Master password · Argon2id · XChaCha20-Poly1305</small></div><span className="hero-seal"><span className="pulse-dot"/>{t("SECURED LOCALLY")}</span></div>
           <div className="tool-row"><div className="search-wrap"><Search size={19}/><input value={filter} onChange={e=>setFilter(e.target.value)} placeholder={t("Tìm tên dịch vụ, email hoặc website...")}/><span className="search-key">SEARCH</span></div><div className="result-count"><SlidersHorizontal size={17}/>{visibleAccounts.length} {t("tài khoản")}</div></div>

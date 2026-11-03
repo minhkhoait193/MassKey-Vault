@@ -31,16 +31,16 @@ Replace `YOUR_USERNAME`; if your project already has a Git repository, **do not 
 
 ## Prepare a draft beta release
 
-Check that `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` all have `1.2.0` as the version. From the reviewed `main` commit:
+Check that `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` all have `1.3.0` as the version. From the reviewed `main` commit:
 
 ```powershell
-git tag v1.2.0-beta.1
-git push origin v1.2.0-beta.1
+git tag v1.3.0-beta.1
+git push origin v1.3.0-beta.1
 ```
 
 GitHub Actions → **Windows Beta Release (draft)** will build from that tag, run tests, create a **draft prerelease**, and attach the unsigned NSIS Setup `.exe` plus `SHA256SUMS.txt`. The draft remains private until you explicitly publish it.
 
-In GitHub **Releases**, review assets, checksum, version, release notes, and beta warning; only then click **Publish release**. Do not publish it as a stable release. If the workflow fails, fix the source and use a **new tag** (for example `v1.2.0-beta.2`) rather than silently retargeting a published tag.
+In GitHub **Releases**, review assets, checksum, version, release notes, and beta warning; only then click **Publish release**. Do not publish it as a stable release. If the workflow fails, fix the source and use a **new tag** (for example `v1.3.0-beta.2`) rather than silently retargeting a published tag.
 
 ## End-user instructions
 

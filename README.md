@@ -3,7 +3,7 @@
 **MassKey Vault** is a privacy-focused, offline-first password manager for Windows 10/11. It is built with Tauri 2, Rust, React, and TypeScript, with a customizable interface and encrypted local backups.
 
 > [!WARNING]
-> **v1.2.0 beta — security review incomplete.** This project has not undergone an independent security audit, full end-to-end Windows verification, or code signing. It is **not recommended for important or irreplaceable passwords** yet. A successful build is not proof of security.
+> **v1.3.0 beta — security review incomplete.** This project has not undergone an independent security audit, full end-to-end Windows verification, or code signing. It is **not recommended for important or irreplaceable passwords** yet. A successful build is not proof of security.
 
 ## Download and install (for Windows users)
 
@@ -21,6 +21,8 @@
 - Configurable inactivity auto-lock and clipboard clearing; optional lock on minimize and password reauthentication.
 - Local Password Health checks for weak/reused passwords and password generation.
 - Password-protected **AES-256 ZIP** backup/restore with drag-and-drop import and an independently encrypted vault payload.
+- Windows session lock and suspend/resume vault locking, encrypted account trash with manual restore and no automatic purge.
+- Verified backup preview before import; conflicting records are added separately instead of silently replacing existing records.
 
 **Changing a password in MassKey Vault does not update it on the associated website.** Always update the website first, verify the new login, then update the saved credential.
 
