@@ -47,3 +47,7 @@ SHA256SUMS.txt
 
 # Note: release installers must be attached to GitHub Releases,
 # never committed to the source repository.
+/artifacts/
+/graphify-out/
+/.impeccable-cache/
+/src-tauri/windows/installer-hooks-upgrade.nsh

@@ -1,6 +1,6 @@
 [package]
 name = "masskey-vault"
-version = "1.3.0"
+version = "1.4.0"
 description = "MassKey Vault — offline encrypted password vault"
 authors = ["MassKey Vault"]
 edition = "2021"
@@ -30,6 +30,7 @@ hex = "0.4"
 sha2 = "0.10"
 zip = { version = "9.0.5", default-features = false, features = ["aes-crypto", "deflate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_RemoteDesktop", "Win32_System_LibraryLoader", "Win32_Graphics_Gdi"] }

@@ -40,6 +40,18 @@ struct Account {
     id: String, category_id: String, title: String, username: String,
     password: String, website: String, notes: String, icon: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all="camelCase", deny_unknown_fields)]
+struct Resource {
+    id: String, url: String, title: String, description: String, notes: String,
+    tags: Vec<String>, collection: String, kind: String,
+    #[serde(default)] folder_path: String,
+    #[serde(default)] docs_url: String,
+    #[serde(default)] docs_checked: bool,
+    #[serde(default)] stars: Option<u64>,
+    #[serde(default)] updated_at: String,
+    #[serde(default)] metadata_status: String,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct VaultSettings {
@@ -58,6 +70,8 @@ impl Default for VaultSettings {
 struct VaultData {
     categories: Vec<Category>, accounts: Vec<Account>, settings: VaultSettings,
     #[serde(default)] trash: Vec<Account>,
+    #[serde(default)] resources: Vec<Resource>,
+    #[serde(default)] resource_trash: Vec<Resource>,
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
@@ -71,6 +85,8 @@ struct Snapshot<'a> {
     categories: &'a Vec<Category>,
     accounts: Vec<PublicAccount<'a>>,
     settings: &'a VaultSettings,
+    resources: &'a Vec<Resource>,
+    resource_trash: &'a Vec<Resource>,
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
@@ -85,7 +101,8 @@ impl Session {
             accounts: self.data.accounts.iter().map(|a| PublicAccount {
                 id: &a.id, category_id: &a.category_id, title: &a.title,
                 username: &a.username, website: &a.website, notes: &a.notes, icon: &a.icon,
-            }).collect(), settings: &self.data.settings }
+            }).collect(), settings: &self.data.settings,
+            resources: &self.data.resources, resource_trash: &self.data.resource_trash }
     }
 }
 impl Drop for Session {
@@ -102,6 +119,12 @@ impl Drop for Session {
         }
         for c in &mut self.data.categories {
             c.id.zeroize(); c.name.zeroize(); c.icon.zeroize(); c.color.zeroize();
+        }
+        for r in self.data.resources.iter_mut().chain(self.data.resource_trash.iter_mut()) {
+            r.id.zeroize(); r.url.zeroize(); r.title.zeroize(); r.description.zeroize();
+            r.notes.zeroize(); r.collection.zeroize(); r.kind.zeroize();
+            r.folder_path.zeroize(); r.docs_url.zeroize(); r.updated_at.zeroize(); r.metadata_status.zeroize();
+            for tag in &mut r.tags { tag.zeroize(); }
         }
     }
 }
@@ -287,6 +310,17 @@ fn persist_session(app: &AppHandle, session: &mut Session) -> Result<(), String>
     session.last_activity = Instant::now();
     Ok(())
 }
+fn persist_next_data(app: &AppHandle, session: &mut Session, next: VaultData) -> Result<(), String> {
+    persist_next_at(&storage_path(app)?, session, next)
+}
+fn persist_next_at(path: &Path, session: &mut Session, next: VaultData) -> Result<(), String> {
+    let file = encrypt_file(&session.dek, &next, session.file.clone())?;
+    write_vault(path, &file)?;
+    session.data = next;
+    session.file = file;
+    session.last_activity = Instant::now();
+    Ok(())
+}
 
 #[tauri::command]
 fn vault_status(app: AppHandle, state: State<'_, VaultState>) -> Result<Status,String> {
@@ -468,10 +502,16 @@ fn generate_similar_password(original: String) -> Result<String, String> {
 #[tauri::command]
 fn delete_category(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
     with_session(&state, |s| {
-        if s.data.accounts.iter().chain(s.data.trash.iter()).any(|a| a.category_id == id) { return Err("Chuyển hoặc xóa vĩnh viễn tài khoản liên quan trước khi xóa danh mục.".into()); }
-        s.data.categories.retain(|c| c.id != id);
-        persist_session(&app,s)
+        let mut next = s.data.clone();
+        remove_empty_category(&mut next, &id)?;
+        persist_next_data(&app,s,next)
     })
+}
+fn remove_empty_category(data: &mut VaultData, id: &str) -> Result<(),String> {
+    if data.accounts.iter().chain(data.trash.iter()).any(|a| a.category_id == id) { return Err("Chuyển hoặc xóa vĩnh viễn tài khoản liên quan trước khi xóa danh mục.".into()); }
+    if !data.categories.iter().any(|c| c.id == id) { return Err("Không tìm thấy danh mục.".into()); }
+    data.categories.retain(|c| c.id != id);
+    Ok(())
 }
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase", deny_unknown_fields)]
@@ -533,6 +573,28 @@ fn trash_snapshot(state: State<'_, VaultState>) -> Result<serde_json::Value,Stri
     }).collect::<Vec<_>>()).map_err(err))
 }
 #[tauri::command]
+fn permanently_delete_account(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    with_session(&state, |s| {
+        let mut next = s.data.clone();
+        remove_trashed_account(&mut next, &id)?;
+        persist_next_data(&app, s, next)
+    })
+}
+fn remove_trashed_account(data: &mut VaultData, id: &str) -> Result<(),String> {
+    let pos = data.trash.iter().position(|a| a.id == id).ok_or("Không tìm thấy tài khoản trong thùng rác")?;
+    data.trash.remove(pos);
+    Ok(())
+}
+#[tauri::command]
+fn empty_trash(app: AppHandle, state: State<'_, VaultState>) -> Result<(),String> {
+    with_session(&state, |s| {
+        if s.data.trash.is_empty() { return Ok(()); }
+        let mut next = s.data.clone();
+        next.trash.clear();
+        persist_next_data(&app, s, next)
+    })
+}
+#[tauri::command]
 fn update_settings(app: AppHandle, state: State<'_, VaultState>, auto_lock_seconds: u64, clipboard_seconds: u64, lock_on_minimize: bool, require_reauth: bool, warn_weak_passwords: bool, vault_health: bool) -> Result<(),String> {
     if !(30..=3600).contains(&auto_lock_seconds) || !(5..=120).contains(&clipboard_seconds) { return Err("Thời gian phải nằm trong giới hạn cho phép.".into()); }
     with_session(&state, |s| {
@@ -563,6 +625,169 @@ fn generate_password(length: usize) -> Result<String,String> {
     const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*_-+=";
     let mut rng=OsRng;
     Ok((0..length).map(|_| ALPHABET[rng.gen_range(0..ALPHABET.len())] as char).collect())
+}
+fn checked_web_url(raw: &str) -> Result<url::Url,String> {
+    if raw.len()>2048 || raw.chars().any(|c| c.is_control() || c.is_whitespace() || c=='\\') {
+        return Err("URL quá dài hoặc chứa ký tự không hợp lệ".into());
+    }
+    let url=url::Url::parse(raw).map_err(|_|"URL cần bắt đầu bằng https:// hoặc http://".to_string())?;
+    if !matches!(url.scheme(),"https"|"http") || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return Err("Chỉ hỗ trợ URL HTTP/HTTPS không chứa thông tin đăng nhập".into());
+    }
+    Ok(url)
+}
+fn valid_resource(r: &Resource) -> Result<(),String> {
+    checked_web_url(&r.url)?;
+    if !r.docs_url.is_empty() { checked_web_url(&r.docs_url)?; }
+    if !matches!(r.kind.as_str(),"website"|"github"|"document") || r.title.trim().is_empty() || r.title.len()>240 ||
+        r.description.len()>600 || r.notes.len()>20_000 || r.collection.len()>120 || r.folder_path.len()>4096 ||
+        r.tags.len()>24 || r.tags.iter().any(|tag|tag.len()>64) { return Err("Thông tin tài nguyên không hợp lệ".into()); }
+    if !r.folder_path.is_empty() && (!Path::new(&r.folder_path).is_absolute() || r.folder_path.chars().any(|c|c.is_control())) {
+        return Err("Đường dẫn thư mục phải là đường dẫn tuyệt đối".into());
+    }
+    Ok(())
+}
+#[derive(Serialize)]
+#[serde(rename_all="camelCase")]
+struct ResourceMetadata { title: String, description: String, stars: Option<u64>, updated_at: String, docs_url: String, status: String }
+fn public_address(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v) => !v.is_private() && !v.is_loopback() && !v.is_link_local() && !v.is_broadcast() && !v.is_documentation() && !v.is_unspecified() && v.octets()[0]!=0 && v.octets()[0]<224 && v.octets()[0]!=100,
+        std::net::IpAddr::V6(v) => v.to_ipv4_mapped().map(|mapped|public_address(std::net::IpAddr::V4(mapped)))
+            .unwrap_or_else(||!v.is_loopback() && !v.is_unspecified() && !v.is_unique_local() && !v.is_unicast_link_local() && !v.is_multicast()),
+    }
+}
+fn metadata_response(raw: &str, accept: &str) -> Result<(String,reqwest::header::HeaderMap),String> {
+    use std::net::ToSocketAddrs;
+    let url=checked_web_url(raw)?;
+    if url.scheme()!="https" {return Err("Chỉ lấy metadata qua HTTPS".into());}
+    let host=url.host_str().ok_or("URL thiếu tên miền")?;
+    if host.parse::<std::net::IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") || !host.contains('.') {return Err("Không lấy metadata từ địa chỉ nội bộ".into());}
+    let addresses=(host,443).to_socket_addrs().map_err(|_|"Không phân giải được tên miền".to_string())?.collect::<Vec<_>>();
+    if addresses.is_empty() || addresses.iter().any(|addr|!public_address(addr.ip())) {return Err("Tên miền trỏ đến mạng nội bộ".into());}
+    let client=reqwest::blocking::Client::builder().timeout(Duration::from_secs(5)).no_proxy()
+        .redirect(reqwest::redirect::Policy::none()).resolve(host,addresses[0]).build().map_err(err)?;
+    let response=client.get(url).header(reqwest::header::USER_AGENT,"MassKey-Vault/1.3 metadata")
+        .header(reqwest::header::ACCEPT,accept).send().map_err(|_|"Không thể tải metadata".to_string())?;
+    if !response.status().is_success() {return Err(format!("Metadata HTTP {}",response.status().as_u16()));}
+    if response.content_length().unwrap_or(0)>128*1024 {return Err("Metadata vượt giới hạn 128 KB".into());}
+    let headers=response.headers().clone();
+    let mut body=Vec::new();
+    response.take(128*1024+1).read_to_end(&mut body).map_err(err)?;
+    if body.len()>128*1024 {return Err("Metadata vượt giới hạn 128 KB".into());}
+    Ok((String::from_utf8_lossy(&body).into_owned(),headers))
+}
+fn html_field(html: &str, name: &str) -> String {
+    let lower=html.to_ascii_lowercase();
+    if name=="title" {
+        if let Some(start)=lower.find("<title") { if let Some(open)=lower[start..].find('>') { let from=start+open+1;
+            if let Some(end)=lower[from..].find("</title>") {return html[from..from+end].trim().chars().take(240).collect();}
+        } } }
+    for (start,_) in lower.match_indices("<meta") {
+        if let Some(end)=lower[start..].find('>') {let tag=&html[start..start+end];let low=tag.to_ascii_lowercase();
+            if low.contains(&format!("name=\"{}\"",name)) || low.contains(&format!("property=\"og:{}\"",name)) {
+                if let Some(pos)=low.find("content=\"") {let from=pos+9;if let Some(stop)=tag[from..].find('"') {return tag[from..from+stop].trim().chars().take(600).collect();}}
+            }
+        }
+    }
+    String::new()
+}
+fn github_repo(url: &url::Url) -> Option<(String,String)> {
+    if url.host_str()? != "github.com" {return None;}
+    let mut parts=url.path_segments()?;
+    let owner=parts.next()?.to_string();let repo=parts.next()?.trim_end_matches(".git").to_string();
+    if owner.is_empty() || repo.is_empty() || !owner.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-') ||
+       !repo.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_'||b==b'.') {return None;}
+    Some((owner,repo))
+}
+fn discover_github_docs(owner:&str,repo:&str,branch:&str,exists:impl Fn(&str)->bool) -> String {
+    let base=format!("https://github.com/{owner}/{repo}/tree/{branch}");
+    for dir in ["docs","doc","documentation"] {
+        let endpoint=format!("https://api.github.com/repos/{owner}/{repo}/contents/{dir}");
+        if exists(&endpoint) {return format!("{base}/{dir}");}
+    }
+    let readme=format!("https://api.github.com/repos/{owner}/{repo}/readme");
+    if exists(&readme) {format!("https://github.com/{owner}/{repo}#readme")} else {String::new()}
+}
+fn fetch_metadata(raw: &str, discover_docs: bool) -> Result<ResourceMetadata,String> {
+    let url=checked_web_url(raw)?;
+    if let Some((owner,repo))=github_repo(&url) {
+        let api=format!("https://api.github.com/repos/{owner}/{repo}");
+        let (body,_)=metadata_response(&api,"application/vnd.github+json")?;
+        let data:serde_json::Value=serde_json::from_str(&body).map_err(err)?;
+        let branch=data["default_branch"].as_str().unwrap_or("main");
+        let docs_url=if discover_docs {discover_github_docs(&owner,&repo,branch,|endpoint|
+            metadata_response(endpoint,"application/vnd.github+json").is_ok())} else {String::new()};
+        return Ok(ResourceMetadata {title:data["full_name"].as_str().unwrap_or(&repo).to_string(),
+            description:data["description"].as_str().unwrap_or("").to_string(),
+            stars:data["stargazers_count"].as_u64(),updated_at:data["updated_at"].as_str().unwrap_or("").to_string(),
+            docs_url,status:"ok".into()});
+    }
+    let (body,headers)=metadata_response(raw,"text/html")?;
+    if !headers.get(reqwest::header::CONTENT_TYPE).and_then(|v|v.to_str().ok()).unwrap_or("").starts_with("text/html") {
+        return Err("Trang không trả về HTML; hãy nhập thông tin thủ công".into());
+    }
+    Ok(ResourceMetadata {title:html_field(&body,"title"),description:html_field(&body,"description"),stars:None,
+        updated_at:String::new(),docs_url:String::new(),status:"ok".into()})
+}
+#[tauri::command]
+async fn fetch_resource_metadata(url: String, discover_docs: Option<bool>) -> Result<ResourceMetadata,String> {
+    tauri::async_runtime::spawn_blocking(move || fetch_metadata(&url,discover_docs.unwrap_or(true))).await.map_err(err)?
+}
+#[tauri::command]
+fn upsert_resource(app: AppHandle, state: State<'_, VaultState>, mut resource: Resource) -> Result<String,String> {
+    valid_resource(&resource)?;
+    with_session(&state, |session| {
+        let mut next=session.data.clone();
+        if resource.id.is_empty() { resource.id=Uuid::new_v4().to_string(); }
+        else if !next.resources.iter().any(|r|r.id==resource.id) { return Err("Không tìm thấy tài nguyên để sửa".into()); }
+        if let Some(existing)=next.resources.iter_mut().find(|r|r.id==resource.id) { *existing=resource.clone(); }
+        else {next.resources.push(resource.clone());}
+        persist_next_data(&app,session,next)?;
+        Ok(resource.id)
+    })
+}
+#[tauri::command]
+fn delete_resource(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    with_session(&state, |session| {
+        let mut next=session.data.clone();
+        let index=next.resources.iter().position(|r|r.id==id).ok_or("Không tìm thấy tài nguyên")?;
+        next.resource_trash.push(next.resources.remove(index));
+        persist_next_data(&app,session,next)
+    })
+}
+#[tauri::command]
+fn restore_resource(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    with_session(&state, |session| {
+        let mut next=session.data.clone();
+        let index=next.resource_trash.iter().position(|r|r.id==id).ok_or("Không tìm thấy tài nguyên")?;
+        next.resources.push(next.resource_trash.remove(index));
+        persist_next_data(&app,session,next)
+    })
+}
+#[tauri::command]
+fn permanently_delete_resource(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    with_session(&state, |session| {
+        let mut next=session.data.clone();
+        let index=next.resource_trash.iter().position(|r|r.id==id).ok_or("Không tìm thấy tài nguyên")?;
+        next.resource_trash.remove(index);
+        persist_next_data(&app,session,next)
+    })
+}
+#[tauri::command]
+fn open_resource_url(app: AppHandle, state: State<'_, VaultState>, id: String, docs: bool) -> Result<(),String> {
+    let raw=with_session(&state, |session| session.data.resources.iter().find(|r|r.id==id)
+        .map(|r| if docs {r.docs_url.clone()} else {r.url.clone()}).ok_or("Không tìm thấy tài nguyên".into()))?;
+    let url=checked_web_url(&raw)?;
+    app.opener().open_url(url.as_str(),None::<&str>).map_err(err)
+}
+#[tauri::command]
+fn open_resource_folder(app: AppHandle, state: State<'_, VaultState>, id: String) -> Result<(),String> {
+    let raw=with_session(&state, |session| session.data.resources.iter().find(|r|r.id==id)
+        .map(|r|r.folder_path.clone()).ok_or("Không tìm thấy tài nguyên".into()))?;
+    let path=PathBuf::from(raw);
+    if !path.is_absolute() || !path.is_dir() { return Err("Thư mục không còn tồn tại. Hãy sửa đường dẫn đã lưu.".into()); }
+    app.opener().open_path(path.to_string_lossy().into_owned(),None::<&str>).map_err(err)
 }
 #[tauri::command]
 fn export_zip(app: AppHandle, state: State<'_, VaultState>, destination: String, zip_password: String) -> Result<(),String> {
@@ -615,7 +840,9 @@ fn read_zip(path: &Path, zip_password: &str) -> Result<VaultFile,String> {
 }
 #[derive(Serialize)]
 #[serde(rename_all="camelCase")]
-struct ImportPreview { added: usize, unchanged: usize, conflicts_as_new: usize, replaced: usize, trash_added: usize, invalid: usize, fingerprint: String }
+struct ImportPreview { added: usize, unchanged: usize, conflicts_as_new: usize, replaced: usize, trash_added: usize,
+    resources_added: usize, resources_unchanged: usize, resources_conflicts_as_new: usize, resources_replaced: usize, resources_trash_added: usize,
+    invalid: usize, fingerprint: String }
 fn import_fingerprint(source: &VaultFile, target: Option<&VaultFile>, mode: &str) -> Result<String,String> {
     let mut hash=Sha256::new();
     hash.update(serde_json::to_vec(source).map_err(err)?);
@@ -632,11 +859,18 @@ fn validate_import(data: &VaultData) -> Result<(),String> {
             return Err("Bản sao có tài khoản trùng mã hoặc thiếu danh mục".into());
         }
     }
+    let mut resource_ids=std::collections::HashSet::new();
+    for resource in data.resources.iter().chain(data.resource_trash.iter()) {
+        if !resource_ids.insert(&resource.id) {return Err("Bản sao có tài nguyên trùng mã".into());}
+        valid_resource(resource)?;
+    }
     Ok(())
 }
 fn preview_counts(source: &VaultData, target: Option<&VaultData>, mode: &str, fingerprint: String) -> ImportPreview {
-    if mode=="replace" { return ImportPreview {added:source.accounts.len(),unchanged:0,conflicts_as_new:0,replaced:target.map(|d|d.accounts.len()).unwrap_or(0),trash_added:source.trash.len(),invalid:0,fingerprint}; }
-    let mut p=ImportPreview {added:0,unchanged:0,conflicts_as_new:0,replaced:0,trash_added:source.trash.len(),invalid:0,fingerprint};
+    if mode=="replace" { return ImportPreview {added:source.accounts.len(),unchanged:0,conflicts_as_new:0,replaced:target.map(|d|d.accounts.len()).unwrap_or(0),trash_added:source.trash.len(),
+        resources_added:source.resources.len(),resources_unchanged:0,resources_conflicts_as_new:0,resources_replaced:target.map(|d|d.resources.len()).unwrap_or(0),resources_trash_added:source.resource_trash.len(),invalid:0,fingerprint}; }
+    let mut p=ImportPreview {added:0,unchanged:0,conflicts_as_new:0,replaced:0,trash_added:source.trash.len(),
+        resources_added:0,resources_unchanged:0,resources_conflicts_as_new:0,resources_replaced:0,resources_trash_added:source.resource_trash.len(),invalid:0,fingerprint};
     for a in &source.accounts {
         let category_remapped=source.categories.iter().find(|c|c.id==a.category_id)
             .and_then(|c|target.and_then(|d|d.categories.iter().find(|t|t.id==c.id).map(|t|t.name!=c.name || t.icon!=c.icon || t.color!=c.color)))
@@ -645,6 +879,13 @@ fn preview_counts(source: &VaultData, target: Option<&VaultData>, mode: &str, fi
             None=>p.added+=1,
             Some(b) if !category_remapped && b.category_id==a.category_id && b.title==a.title && b.username==a.username && b.password==a.password && b.website==a.website && b.notes==a.notes && b.icon==a.icon=>p.unchanged+=1,
             Some(_)=>p.conflicts_as_new+=1,
+        }
+    }
+    for resource in &source.resources {
+        match target.and_then(|d|d.resources.iter().find(|item|item.id==resource.id)) {
+            None=>p.resources_added+=1,
+            Some(existing) if existing==resource=>p.resources_unchanged+=1,
+            Some(_)=>p.resources_conflicts_as_new+=1,
         }
     }
     p
@@ -709,6 +950,19 @@ fn import_zip(app: AppHandle, state: State<'_,VaultState>, source: String, zip_p
             }
             next.trash.push(acc);
         }
+        for mut resource in imported.resources.drain(..) {
+            if let Some(existing)=next.resources.iter().find(|r|r.id==resource.id) {
+                if existing!=&resource {resource.id=Uuid::new_v4().to_string();next.resources.push(resource);}
+            } else if next.resource_trash.iter().any(|r|r.id==resource.id) {
+                resource.id=Uuid::new_v4().to_string();next.resources.push(resource);
+            } else {next.resources.push(resource);}
+        }
+        for mut resource in imported.resource_trash.drain(..) {
+            if next.resources.iter().chain(next.resource_trash.iter()).any(|r|r.id==resource.id) {
+                resource.id=Uuid::new_v4().to_string();
+            }
+            next.resource_trash.push(resource);
+        }
         let file=encrypt_file(&target.dek,&next,target.file.clone())?;
         write_vault(&path,&file)?;
         target.data=next; target.file=file; target.last_activity=Instant::now();
@@ -733,6 +987,48 @@ fn import_zip(app: AppHandle, state: State<'_,VaultState>, source: String, zip_p
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "Generates a disposable UAT vault only when explicitly requested"]
+    fn write_ui_qa_fixture() {
+        let path = std::env::var_os("MASSKEY_UAT_FIXTURE").expect("Set MASSKEY_UAT_FIXTURE to a workspace path");
+        let path = PathBuf::from(path);
+        let category = |id: &str| Category { id:id.into(), name:id.into(), icon:"✦".into(), color:"#9978fc".into() };
+        let account = |id: &str, category_id: &str| Account { id:id.into(), category_id:category_id.into(), title:id.into(), username:"uat@example.invalid".into(), password:"fixture-only-secret".into(), website:String::new(), notes:String::new(), icon:"✦".into() };
+        let data = VaultData { categories:vec![category("Empty"),category("Active"),category("Trashed")], accounts:vec![account("Active sample","Active")], trash:vec![account("Trash sample 1","Trashed"),account("Trash sample 2","Trashed")], ..VaultData::default() };
+        let (file,_,_) = make_file("MassKey-UAT-Only-2026!", &data).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_vault(&path,&file).unwrap();
+    }
+    #[test]
+    fn category_deletion_waits_for_active_and_trashed_accounts() {
+        let category=Category{id:"c".into(),name:"Test".into(),icon:"✦".into(),color:"#9978fc".into()};
+        let account=Account{id:"a".into(),category_id:"c".into(),title:"Test".into(),username:String::new(),password:"secret".into(),website:String::new(),notes:String::new(),icon:"✦".into()};
+        let mut data=VaultData{categories:vec![category],accounts:vec![account.clone()],..VaultData::default()};
+        assert!(remove_empty_category(&mut data,"c").is_err());
+        assert_eq!(data.categories.len(),1);
+        data.trash.push(data.accounts.remove(0));
+        assert!(remove_empty_category(&mut data,"c").is_err());
+        assert_eq!(data.categories.len(),1);
+        assert!(remove_trashed_account(&mut data,"missing").is_err());
+        assert_eq!(data.trash.len(),1);
+        remove_trashed_account(&mut data,"a").unwrap();
+        assert!(data.trash.is_empty());
+        remove_empty_category(&mut data,"c").unwrap();
+        assert!(data.categories.is_empty());
+    }
+    #[test]
+    fn failed_permanent_delete_write_keeps_open_session() {
+        let mut data=VaultData::default();
+        data.trash.push(Account{id:"test".into(),category_id:String::new(),title:"Test".into(),username:String::new(),password:"fixture-only".into(),website:String::new(),notes:String::new(),icon:"✦".into()});
+        let (file,dek,_)=make_file("MassKey-UAT-Only-2026!",&data).unwrap();
+        let mut session=Session{dek,data,file,last_activity:Instant::now()};
+        let mut next=session.data.clone();
+        remove_trashed_account(&mut next,"test").unwrap();
+        let missing=std::env::temp_dir().join(format!("masskey-missing-{}",Uuid::new_v4())).join("vault.nvault");
+        assert!(persist_next_at(&missing,&mut session,next).is_err());
+        assert_eq!(session.data.trash.len(),1);
+        assert_eq!(unwrap_file(&session.file,"MassKey-UAT-Only-2026!",false).unwrap().1.trash.len(),1);
+    }
     #[test]
     fn correct_password_roundtrip_and_tamper_failure() {
         let data=VaultData::default();
@@ -787,6 +1083,98 @@ mod tests {
         let mut invalid=source.clone(); invalid.accounts[0].category_id="missing".into();
         assert!(validate_import(&invalid).is_err());
     }
+    #[test]
+    fn resource_roundtrip_legacy_and_import_counts() {
+        let old=r#"{"categories":[],"accounts":[],"settings":{"auto_lock_seconds":180,"clipboard_seconds":25}}"#;
+        let legacy:VaultData=serde_json::from_str(old).unwrap();
+        assert!(legacy.resources.is_empty() && legacy.resource_trash.is_empty());
+        let resource=Resource{id:"r1".into(),url:"https://github.com/example/repo".into(),title:"Repo".into(),
+            description:"Description".into(),notes:"Private note".into(),tags:vec!["rust".into()],collection:"Work".into(),
+            kind:"github".into(),folder_path:"D:\\Docs".into(),docs_url:String::new(),docs_checked:false,stars:Some(7),updated_at:String::new(),metadata_status:"ok".into()};
+        assert!(valid_resource(&resource).is_ok());
+        let source=VaultData{resources:vec![resource.clone()],..VaultData::default()};
+        let (file,_,_)=make_file("a-very-long-test-master-password",&source).unwrap();
+        let (_,restored)=unwrap_file(&file,"a-very-long-test-master-password",false).unwrap();
+        assert_eq!(restored.resources[0],resource);
+        assert_eq!(preview_counts(&source,Some(&source),"merge",String::new()).resources_unchanged,1);
+        let mut changed=resource.clone();changed.notes="Other".into();
+        let target=VaultData{resources:vec![changed],..VaultData::default()};
+        assert_eq!(preview_counts(&source,Some(&target),"merge",String::new()).resources_conflicts_as_new,1);
+        assert_eq!(preview_counts(&source,Some(&target),"replace",String::new()).resources_replaced,1);
+        let mut invalid=source.clone();invalid.resources[0].url="file:///C:/secret".into();
+        assert!(validate_import(&invalid).is_err());
+        assert!(!public_address("127.0.0.1".parse().unwrap()));
+        assert!(!public_address("192.168.1.2".parse().unwrap()));
+        assert!(!public_address("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(metadata_response("https://127.0.0.1/private","text/html").is_err());
+        assert_eq!(github_repo(&url::Url::parse("https://github.com/example/repo").unwrap()),Some(("example".into(),"repo".into())));
+        assert!(discover_github_docs("a","b","main",|url|url.ends_with("/contents/docs")).ends_with("/tree/main/docs"));
+        assert!(discover_github_docs("a","b","main",|url|url.ends_with("/readme")).ends_with("#readme"));
+        assert!(discover_github_docs("a","b","main",|_|false).is_empty());
+    }
+    #[test]
+    fn v12_encrypted_vault_upgrade_and_zip_restore() {
+        use zip::{write::SimpleFileOptions, AesMode, CompressionMethod, ZipWriter};
+        const MASTER: &str = "MassKey-test-master-2026";
+        const ZIP_PASSWORD: &str = "MassKey-test-backup-2026";
+        // The v1.2 payload schema has no trash or resource fields. Its file
+        // format, Argon2 parameters, and AAD values match the v1.2.0 tag.
+        let legacy = r##"{"categories":[{"id":"c1","name":"Work","icon":"W","color":"#9978fc"}],"accounts":[{"id":"a1","category_id":"c1","title":"Example","username":"test@example.invalid","password":"fixture-only-password","website":"https://example.invalid","notes":"fixture note","icon":"E"}],"settings":{"auto_lock_seconds":240,"clipboard_seconds":40}}"##;
+        let (mut old_file, dek, recovery) = make_file(MASTER, &VaultData::default()).unwrap();
+        old_file.payload = seal(&dek, legacy.as_bytes(), AAD_DATA).unwrap();
+        let old_bytes = serde_json::to_vec(&old_file).unwrap();
+        let parsed = parse_vault(&old_bytes).unwrap();
+        let (unlocked_dek, old_data) = unwrap_file(&parsed, MASTER, false).unwrap();
+        assert_eq!(old_data.accounts[0].password, "fixture-only-password");
+        assert_eq!(old_data.settings.auto_lock_seconds, 240);
+        assert!(old_data.resources.is_empty());
+        assert_eq!(unwrap_file(&parsed, &recovery, true).unwrap().1.accounts.len(), 1);
+
+        let mut upgraded = old_data.clone();
+        upgraded.resources.push(Resource { id:"r1".into(), url:"https://example.org".into(),
+            title:"Example resource".into(), description:String::new(), notes:String::new(),
+            tags:vec!["test".into()], collection:"Work".into(), kind:"website".into(),
+            folder_path:String::new(), docs_url:String::new(), docs_checked:false,
+            stars:None, updated_at:String::new(), metadata_status:String::new() });
+        let upgraded_file = encrypt_file(&unlocked_dek, &upgraded, parsed).unwrap();
+        let (_, reopened) = unwrap_file(&upgraded_file, MASTER, false).unwrap();
+        assert_eq!(serde_json::to_value(&reopened.accounts).unwrap(), serde_json::to_value(&old_data.accounts).unwrap());
+        assert_eq!(reopened.settings.auto_lock_seconds, 240);
+        assert_eq!(reopened.resources.len(), 1);
+
+        let zip_path = std::env::temp_dir().join(format!("masskey-upgrade-{}.zip", Uuid::new_v4()));
+        let result = (|| -> Result<(), String> {
+            let mut writer = ZipWriter::new(File::create(&zip_path).map_err(err)?);
+            let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored)
+                .with_aes_encryption(AesMode::Aes256, ZIP_PASSWORD);
+            writer.start_file("vault.nvault", options).map_err(err)?;
+            writer.write_all(&serde_json::to_vec(&upgraded_file).map_err(err)?).map_err(err)?;
+            writer.finish().map_err(err)?;
+            let restored_file = read_zip(&zip_path, ZIP_PASSWORD)?;
+            let (_, restored) = unwrap_file(&restored_file, MASTER, false)?;
+            assert_eq!(serde_json::to_value(&restored.accounts).unwrap(), serde_json::to_value(&old_data.accounts).unwrap());
+            assert_eq!(restored.resources, upgraded.resources);
+            assert!(read_zip(&zip_path, "wrong-password").is_err());
+            Ok(())
+        })();
+        let _ = fs::remove_file(&zip_path);
+        result.unwrap();
+    }
+    #[test]
+    fn failed_resource_delete_write_keeps_open_session() {
+        let resource=Resource{id:"r".into(),url:"https://example.com".into(),title:"Example".into(),description:String::new(),
+            notes:String::new(),tags:vec![],collection:String::new(),kind:"website".into(),folder_path:String::new(),
+            docs_url:String::new(),docs_checked:false,stars:None,updated_at:String::new(),metadata_status:String::new()};
+        let data=VaultData{resources:vec![resource],..VaultData::default()};
+        let (file,dek,_)=make_file("MassKey-UAT-Only-2026!",&data).unwrap();
+        let mut session=Session{dek,data,file,last_activity:Instant::now()};
+        let mut next=session.data.clone();
+        next.resource_trash.push(next.resources.remove(0));
+        let missing=std::env::temp_dir().join(format!("masskey-missing-{}",Uuid::new_v4())).join("vault.nvault");
+        assert!(persist_next_at(&missing,&mut session,next).is_err());
+        assert_eq!(session.data.resources.len(),1);
+        assert!(session.data.resource_trash.is_empty());
+    }
 }
 
 pub fn run() {
@@ -807,8 +1195,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             vault_status, create_vault, unlock_vault, recover_vault, rotate_recovery, lock_vault,
             touch_session, snapshot, get_password, upsert_category, delete_category,
-            upsert_account, delete_account, restore_account, trash_snapshot, update_settings, change_master,
+            upsert_account, delete_account, restore_account, trash_snapshot, permanently_delete_account, empty_trash, update_settings, change_master,
             generate_password, generate_similar_password, vault_health, open_account_website, export_zip, preview_import_zip, import_zip
+            ,upsert_resource, delete_resource, restore_resource, permanently_delete_resource,
+            open_resource_url, open_resource_folder, fetch_resource_metadata
         ])
         .run(tauri::generate_context!())
         .expect("Failed to launch MassKey Vault");

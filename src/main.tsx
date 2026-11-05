@@ -8,26 +8,84 @@ import { translate, type Language } from './i18n';
 import {
   ArchiveRestore, ArrowDownToLine, ArrowRight, Check, ChevronDown,
   ClipboardCopy, Clock3, Eye, EyeOff, FolderClosed, FolderPlus, KeyRound,
-  LayoutGrid, Lock, LockKeyhole, Moon, Pencil, Plus, Search,
+  LayoutGrid, Lock, LockKeyhole, Pencil, Plus, Search,
   Settings2, Shield, ShieldCheck, ShieldOff, SlidersHorizontal,
-  Sun, Trash2, UploadCloud, X, Zap, Languages, ExternalLink, ImagePlus, Activity, RefreshCw
+  Trash2, UploadCloud, X, Zap, Languages, ExternalLink, ImagePlus, Activity, RefreshCw,
+  BookOpen, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import logo from './logo.png';
+import passwordDoor from './assets/door-passwords.svg';
+import resourceDoor from './assets/door-resources.svg';
+import ResourceSpace, { ResourceTrash, type Resource } from './ResourceSpace';
 import './style.css';
 
 type Category = { id: string; name: string; icon: string; color: string };
 type Account = { id: string; categoryId: string; title: string; username: string; website: string; notes: string; icon: string };
 type Settings = { auto_lock_seconds: number; clipboard_seconds: number; lock_on_minimize:boolean; require_reauth:boolean; warn_weak_passwords:boolean; vault_health:boolean };
 type HealthReport = { weak:string[]; reused:string[]; total:number };
-type Snapshot = { categories: Category[]; accounts: Account[]; settings: Settings };
+type Snapshot = { categories: Category[]; accounts: Account[]; settings: Settings; resources: Resource[]; resourceTrash: Resource[] };
 type Status = { exists: boolean; unlocked: boolean };
-type Tab = 'all' | 'category' | 'settings' | 'backup' | 'trash';
+type Tab = 'all' | 'category' | 'settings' | 'backup' | 'trash' | 'resources';
+type Space = 'welcome' | 'passwords' | 'resources';
+type Theme = 'dark' | 'light' | 'pink-light' | 'purple-dark';
+const themeOptions: {value:Theme; label:string}[] = [
+  {value:'light',label:'Sáng'}, {value:'dark',label:'Tối'},
+  {value:'pink-light',label:'Hồng sáng'}, {value:'purple-dark',label:'Tím tối'},
+];
+function ThemeSelector({value,onChange,t}:{value:Theme;onChange:(theme:Theme)=>void;t:(key:string)=>string}) {
+  const [open,setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const selected = themeOptions.find(option=>option.value===value)!;
+  useEffect(()=>{
+    if(!open)return;
+    const onPointer=(event:PointerEvent)=>{
+      if(!containerRef.current?.contains(event.target as Node))setOpen(false);
+    };
+    const onKey=(event:KeyboardEvent)=>{
+      if(event.key==='Escape') {event.stopPropagation();setOpen(false);triggerRef.current?.focus();}
+    };
+    document.addEventListener('pointerdown',onPointer);
+    document.addEventListener('keydown',onKey,true);
+    return()=>{document.removeEventListener('pointerdown',onPointer);document.removeEventListener('keydown',onKey,true);};
+  },[open]);
+  useEffect(()=>{
+    if(open)containerRef.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"][aria-checked="true"]')?.focus();
+  },[open]);
+  const moveFocus=(event:React.KeyboardEvent<HTMLDivElement>)=>{
+    if(event.key!=='ArrowDown'&&event.key!=='ArrowUp')return;
+    event.preventDefault();
+    const items=Array.from(containerRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')??[]);
+    const index=items.indexOf(document.activeElement as HTMLButtonElement);
+    items[(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();
+  };
+  return <div className={'theme-picker'+(open?' is-open':'')} ref={containerRef} onBlur={event=>{
+    if(!event.currentTarget.contains(event.relatedTarget))setOpen(false);
+  }}>
+    <button ref={triggerRef} type="button" className="theme-trigger" aria-label={`${t('Giao diện')}: ${t(selected.label)}`} aria-haspopup="menu" aria-expanded={open} onClick={()=>setOpen(current=>!current)}>
+      <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true"/>
+      <span className="theme-trigger-label">{t(selected.label)}</span>
+      <ChevronDown className="theme-chevron" size={15} aria-hidden="true"/>
+    </button>
+    {open&&<div className="theme-menu" role="menu" aria-label={t('Giao diện')} onKeyDown={moveFocus}>
+      <p className="theme-menu-caption">{t('Giao diện')}</p>
+      <div className="theme-menu-grid">
+        {themeOptions.map(option=><button type="button" key={option.value} role="menuitemradio" aria-checked={value===option.value}
+          className={'theme-option'+(value===option.value?' active':'')} onClick={()=>{onChange(option.value);setOpen(false);triggerRef.current?.focus();}}>
+          <span className={`theme-preview theme-preview-${option.value}`} aria-hidden="true"><span className="theme-preview-sidebar"/><span className="theme-preview-content"><span/><span/><span/></span></span>
+          <span className="theme-option-label">{t(option.label)}</span>
+          {value===option.value&&<Check size={15} className="theme-option-check" aria-hidden="true"/>}
+        </button>)}
+      </div>
+    </div>}
+  </div>;
+}
 type AccountDraft = { id?: string; title: string; categoryId: string; username: string; password: string; website: string; notes: string; icon: string };
-type ImportPreview = {added:number;unchanged:number;conflictsAsNew:number;replaced:number;trashAdded:number;invalid:number;fingerprint:string};
+type ImportPreview = {added:number;unchanged:number;conflictsAsNew:number;replaced:number;trashAdded:number;resourcesAdded:number;resourcesUnchanged:number;resourcesConflictsAsNew:number;resourcesReplaced:number;resourcesTrashAdded:number;invalid:number;fingerprint:string};
 const icons = ['✦','◈','✉','♧','☁','⌘','◎','◉','▣','◇','♛','☼','✳','♥','✿','⚙','▦','♟','♬','✈','🔐','🎮','🏦','💼','📨','🌐'];
 const colors = ['#9d82ff','#50cbb7','#e9b36f','#e78aab','#76a9fb','#b9a7ef'];
 const blank: AccountDraft = {title:'',categoryId:'',username:'',password:'',website:'',notes:'',icon:'✦'};
-const defaultSnap: Snapshot = { categories:[], accounts:[], settings:{auto_lock_seconds:180,clipboard_seconds:25,lock_on_minimize:false,require_reauth:false,warn_weak_passwords:true,vault_health:true} };
+const defaultSnap: Snapshot = { categories:[], accounts:[], resources:[], resourceTrash:[], settings:{auto_lock_seconds:180,clipboard_seconds:25,lock_on_minimize:false,require_reauth:false,warn_weak_passwords:true,vault_health:true} };
 const api = <T,>(name: string, args?: Record<string,unknown>) => invoke<T>(name,args);
 const errorText = (e: unknown) => typeof e === 'string' ? e : (e instanceof Error ? e.message : 'Có lỗi xảy ra.');
 
@@ -85,10 +143,18 @@ function LanguageMenu({value,onChange}:{value:Language;onChange:(value:Language)
 function App() {
   const [status,setStatus] = useState<Status>({exists:true,unlocked:false});
   const [snap,setSnap] = useState<Snapshot>(defaultSnap);
-  const [theme,setTheme] = useState<'dark'|'light'>(()=>localStorage.getItem('masskey-theme')==='light'?'light':'dark');
+  const [theme,setTheme] = useState<Theme>(()=>{
+    const saved=localStorage.getItem('masskey-theme');
+    return themeOptions.some(option=>option.value===saved)?saved as Theme:'dark';
+  });
   const [lang,setLang] = useState<Language>(()=>{const v=localStorage.getItem('masskey-language');return v==='en'||v==='th'?v:'vi';});
   const t = (text:string) => translate(lang,text);
   const [tab,setTab] = useState<Tab>('all');
+  const [space,setSpace] = useState<Space>('welcome');
+  const [enteringSpace,setEnteringSpace] = useState<Space|null>(null);
+  const enterTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+  const [sidebarCollapsed,setSidebarCollapsed] = useState(()=>localStorage.getItem('masskey-sidebar-collapsed')==='true');
+  const [resourceCollection,setResourceCollection] = useState('');
   const [filter,setFilter] = useState('');
   const [categoryId,setCategoryId] = useState('');
   const [modal,setModal] = useState<'account'|'category'|'detail'|'recovery'|'import'|'export'|'none'>('none');
@@ -149,16 +215,43 @@ function App() {
     const st = await api<Status>('vault_status');
     setStatus(st);
     if(st.unlocked) {
-      const data=await api<Snapshot>('snapshot');setSnap(data);
+      const [data,trash]=await Promise.all([api<Snapshot>('snapshot'),api<Account[]>('trash_snapshot')]);
+      setSnap(data);setTrashed(trash);
       setSettingsLock(data.settings.auto_lock_seconds);setSettingsClip(data.settings.clipboard_seconds);
       setSettingsMin(!!data.settings.lock_on_minimize);setSettingsReauth(!!data.settings.require_reauth);
       setSettingsWarn(data.settings.warn_weak_passwords!==false);setSettingsHealth(data.settings.vault_health!==false);
       if(data.settings.vault_health!==false) api<HealthReport>('vault_health').then(setHealth).catch(()=>setHealth(null)); else setHealth(null);
-      api<Account[]>('trash_snapshot').then(setTrashed).catch(()=>setTrashed([]));
-    } else { setSnap(defaultSnap);setTrashed([]);setHealth(null);setReauthInput('');setShownPassword('');setSelected(null);setTab('all');setModal(v=>v==='import'?v:'none'); }
+    } else { setSnap(defaultSnap);setTrashed([]);setHealth(null);setReauthInput('');setShownPassword('');setSelected(null);setTab('all');setSpace('welcome');setEnteringSpace(null);setModal(v=>v==='import'?v:'none'); }
   },[]);
+  const refreshGithub = async () => {
+    try {
+      const data=await api<Snapshot>('snapshot');
+      for(const resource of data.resources.filter(item=>item.kind==='github')) {
+        try {
+          const meta=await api<{title:string;description:string;stars:number|null;updatedAt:string;docsUrl:string}>('fetch_resource_metadata',{url:resource.url,discoverDocs:!resource.docsChecked});
+          const current=(await api<Snapshot>('snapshot')).resources.find(item=>item.id===resource.id);
+          if(current?.url===resource.url)await api('upsert_resource',{resource:{...current,stars:meta.stars,updatedAt:meta.updatedAt,metadataStatus:'ok',docsUrl:current.docsUrl||meta.docsUrl,docsChecked:true}});
+        } catch (failure) {
+          try {const current=(await api<Snapshot>('snapshot')).resources.find(item=>item.id===resource.id);
+            const reason=errorText(failure).includes('403')?'GitHub API đang giới hạn; đang hiển thị dữ liệu đã lưu':'Không thể kết nối; đang hiển thị dữ liệu đã lưu';
+            if(current?.url===resource.url)await api('upsert_resource',{resource:{...current,metadataStatus:reason}});
+          } catch {break;}
+        }
+      }
+      await load();
+    } catch { /* The vault may have locked while the background refresh ran. */ }
+  };
   useEffect(()=>{load().catch(e=>alert(errorText(e),true));},[load,alert]);
   useEffect(()=>{document.documentElement.dataset.theme=theme;localStorage.setItem('masskey-theme',theme);},[theme]);
+  useEffect(()=>()=>{if(enterTimer.current)clearTimeout(enterTimer.current);},[]);
+  const enterSpace=(next:'passwords'|'resources')=>{
+    if(enteringSpace)return;
+    setEnteringSpace(next);
+    const finish=()=>{setSpace(next);setTab(next==='passwords'?'all':'resources');setEnteringSpace(null);};
+    if(window.matchMedia('(prefers-reduced-motion: reduce)').matches)finish();
+    else enterTimer.current=setTimeout(finish,360);
+  };
+  useEffect(()=>{localStorage.setItem('masskey-sidebar-collapsed',String(sidebarCollapsed));},[sidebarCollapsed]);
   useEffect(()=>{document.documentElement.lang=lang;localStorage.setItem('masskey-language',lang);},[lang]);
   useEffect(()=>{let unsubscribe:undefined|(()=>void);getCurrentWindow().onResized(async()=>{
     if(!status.unlocked||!snap.settings.lock_on_minimize)return;
@@ -170,6 +263,24 @@ function App() {
       setImportNewPass('');setShownPassword('');setReauthInput('');setRevealed(false);
     }
   },[modal]);
+  useEffect(()=>{
+    if(modal==='none'&&!showRecoverySetup)return;
+    const dialog=document.querySelector<HTMLElement>('.modal-scrim .modal-box');
+    if(!dialog)return;
+    const opener=document.activeElement instanceof HTMLElement?document.activeElement:null;
+    const controls=()=>Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])')).filter(el=>el.getClientRects().length>0);
+    const frame=requestAnimationFrame(()=>controls()[0]?.focus());
+    const onKey=(event:KeyboardEvent)=>{
+      if(event.key==='Escape'&&!showRecoverySetup){event.preventDefault();setModal('none');return;}
+      if(event.key!=='Tab')return;
+      const items=controls();if(!items.length)return;
+      const first=items[0],last=items[items.length-1];
+      if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+      else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+    };
+    window.addEventListener('keydown',onKey);
+    return()=>{cancelAnimationFrame(frame);window.removeEventListener('keydown',onKey);opener?.focus();};
+  },[modal,showRecoverySetup]);
   useEffect(()=>{
     const timer=window.setInterval(()=>{api<Status>('vault_status').then(s=>{
       if(status.unlocked && !s.unlocked) {setModal('none');setShownPassword('');setSelected(null);setSnap(defaultSnap);setNotice('Kho đã tự khóa sau thời gian không hoạt động.');}
@@ -223,7 +334,8 @@ function App() {
   });
   const unlock=()=>doWork(async()=>{
     await api('unlock_vault',{masterPassword:master});setMaster('');setRecoverMode(false);
-    await load();alert('Đã mở khóa MassKey Vault.');
+    await load();setSpace('welcome');alert('Đã mở khóa MassKey Vault.');
+    void refreshGithub();
   });
   const recover=()=>doWork(async()=>{
     await api('recover_vault',{recoveryKey:secret,newMasterPassword:newPass});
@@ -249,8 +361,21 @@ function App() {
     await api('upsert_category',categoryDraft);setModal('none');await load();alert('Đã lưu thư viện.');
   });
   const deleteCategory=(id:string)=>{
-    if(!window.confirm('Xóa thư viện này? Tài khoản bên trong phải được chuyển trước.'))return;
+    const active=snap.accounts.filter(account=>account.categoryId===id).length;
+    const inTrash=trashed.filter(account=>account.categoryId===id).length;
+    if(active||inTrash){alert(`${t('Không thể xóa thư viện')}: ${active} ${t('tài khoản đang dùng')}, ${inTrash} ${t('trong thùng rác')}. ${t('Chuyển tài khoản đang dùng và xóa vĩnh viễn tài khoản trong thùng rác trước.')}`,true);return;}
+    const name=snap.categories.find(category=>category.id===id)?.name||'';
+    if(!window.confirm(`${t('Xóa thư viện')} “${name}”?`))return;
     doWork(async()=>{await api('delete_category',{id});setModal('none');setTab('all');await load();});
+  };
+  const permanentlyDelete=(account:Account)=>{
+    if(!window.confirm(`${t('Xóa vĩnh viễn tài khoản')} “${account.title}”?\n\n${t('Dữ liệu có thể vẫn còn trong bản sao ZIP hoặc .bak đã tạo trước đó.')}`))return;
+    doWork(async()=>{await api('permanently_delete_account',{id:account.id});await load();alert(t('Đã xóa vĩnh viễn tài khoản.'));});
+  };
+  const emptyTrash=()=>{
+    const count=trashed.length;
+    if(!count||!window.confirm(`${t('Dọn hết thùng rác')}: ${count} ${t('tài khoản')}?\n\n${t('Dữ liệu có thể vẫn còn trong bản sao ZIP hoặc .bak đã tạo trước đó.')}`))return;
+    doWork(async()=>{await api('empty_trash');await load();alert(t('Đã dọn hết thùng rác.'));});
   };
   const reveal=()=>doWork(async()=>{
     if(!selected)return;
@@ -274,11 +399,11 @@ function App() {
     if(status.exists && !status.unlocked)throw new Error('Mở khóa vault hiện tại trước khi khôi phục dữ liệu.');
     const mode=status.exists?importMode:'replace';
     const preview=await api<ImportPreview>('preview_import_zip',{source:zipPath,zipPassword,sourceSecret:sourcePass,recoveryMode:importRecovery,mode});
-    const summary=`Bản sao hợp lệ.\nThêm: ${preview.added}\nTrùng và bỏ qua: ${preview.unchanged}\nXung đột, thêm bản mới: ${preview.conflictsAsNew}\nTài khoản hiện có sẽ bị thay thế: ${preview.replaced}\nTài khoản đưa vào thùng rác: ${preview.trashAdded}\nKhông thể nhập: ${preview.invalid}\n\nXung đột giữ cả hai bản ghi. Chỉ ghi sau khi xác nhận. Tiếp tục?`;
+    const summary=`Bản sao hợp lệ.\nTài khoản thêm: ${preview.added}; trùng: ${preview.unchanged}; xung đột giữ cả hai: ${preview.conflictsAsNew}; thay thế: ${preview.replaced}; thùng rác: ${preview.trashAdded}.\nTài nguyên thêm: ${preview.resourcesAdded}; trùng: ${preview.resourcesUnchanged}; xung đột giữ cả hai: ${preview.resourcesConflictsAsNew}; thay thế: ${preview.resourcesReplaced}; thùng rác: ${preview.resourcesTrashAdded}.\nKhông thể nhập: ${preview.invalid}\n\nĐường dẫn thư mục tài nguyên có thể không còn hợp lệ trên máy khác. Chỉ ghi sau khi xác nhận. Tiếp tục?`;
     if(!window.confirm(summary))return;
     const count=await api<number>('import_zip',{source:zipPath,zipPassword,sourceSecret:sourcePass,
       recoveryMode:importRecovery,newMasterPassword:importRecovery?importNewPass:null,mode,expectedFingerprint:preview.fingerprint});
-    setZipPassword('');setSourcePass('');setImportNewPass('');setModal('none');await load();
+    setZipPassword('');setSourcePass('');setImportNewPass('');setModal('none');await load();if(!status.exists)setSpace('welcome');
     alert(`Khôi phục thành công. Bản sao có ${count} tài khoản.`);
   });
   const saveSettings=()=>doWork(async()=>{await api('update_settings',{autoLockSeconds:settingsLock,clipboardSeconds:settingsClip,lockOnMinimize:settingsMin,requireReauth:settingsReauth,warnWeakPasswords:settingsWarn,vaultHealth:settingsHealth});await load();alert('Đã lưu thiết lập bảo mật.');});
@@ -316,7 +441,7 @@ function App() {
       const w=image.naturalWidth*scale,h=image.naturalHeight*scale;
       ctx.drawImage(image,(80-w)/2,(80-h)/2,w,h);
       const value=canvas.toDataURL('image/png');
-      if(value.length>89000)throw Error('Icon is too large after processing');
+      if(value.length>86690)throw Error('Icon PNG is too large. Please choose a simpler image.');
       if(iconTarget.current==='account')setDraft(d=>({...d,icon:value}));
       else setCategoryDraft(d=>({...d,icon:value}));
     }catch(err){alert(errorText(err),true);}finally{URL.revokeObjectURL(objectUrl);}
@@ -335,26 +460,28 @@ function App() {
     return !q || [a.title,a.username,a.website].join(' ').toLocaleLowerCase().includes(q);
   }),[snap.accounts,tab,categoryId,filter]);
   const selectedCategory=snap.categories.find(c=>c.id===categoryId);
+  const categoryActiveCount=snap.accounts.filter(account=>account.categoryId===categoryId).length;
+  const categoryTrashCount=trashed.filter(account=>account.categoryId===categoryId).length;
   const languagePicker=<LanguageMenu value={lang} onChange={setLang}/>;
-  const themeButton=<button className="icon-btn mode-toggle" title={theme==='dark'?t("Bật giao diện sáng"):t("Bật giao diện tối")} onClick={()=>setTheme(v=>v==='dark'?'light':'dark')}>{theme==='dark'?<Sun size={19}/>:<Moon size={19}/>}</button>;
+  const themePicker=<ThemeSelector value={theme} onChange={setTheme} t={t}/>;
   return <div className="app-shell"><input type="file" hidden accept=".png,.jpg,.jpeg,.webp,.ico,image/png,image/jpeg,image/webp,image/x-icon" ref={iconInput} onChange={onIconFile}/>
-    {status.unlocked && !showRecoverySetup && <aside className="sidebar">
-      <div className="sidebar-brand"><div className="brand-mark"><img src={logo} alt="MassKey Vault" /></div><div><div className="brand-text">MASSKEY <span>VAULT</span></div><div className="brand-sub">YOUR PRIVATE SPACE</div></div></div>
-      <div className="nav-block"><p className="nav-caption">{t("THƯ VIỆN")}</p>
-        <button className={'nav-item '+(tab==='all'?'active':'')} onClick={()=>{setTab('all');setFilter('');}}><LayoutGrid size={17}/><span>{t("Tất cả tài khoản")}</span><span className="nav-count">{snap.accounts.length}</span></button>
-        <div className="nav-categories">{snap.categories.map(c=><button key={c.id} className={'nav-item '+(tab==='category'&&c.id===categoryId?'active':'')} onClick={()=>{setTab('category');setCategoryId(c.id);setFilter('');}}><span className="category-symbol" style={{color:c.color}}>{iconView(c.icon)}</span><span>{c.name}</span><span className="nav-count">{snap.accounts.filter(a=>a.categoryId===c.id).length}</span></button>)}</div>
-        <button className="nav-item nav-add" onClick={()=>editCategory()}><FolderPlus size={17}/><span>{t("Thêm thư viện")}</span><Plus size={15}/></button>
+    {status.unlocked && !showRecoverySetup && space!=='welcome' && <aside className={'sidebar'+(sidebarCollapsed?' sidebar-collapsed':'')}>
+      <button className="sidebar-brand" title={t('Về màn hình chào')} aria-label={t('Về màn hình chào')} onClick={()=>setSpace('welcome')}><div className="brand-mark"><img src={logo} alt="" /></div><div><div className="brand-text">MASSKEY <span>VAULT</span></div><div className="brand-sub">YOUR PRIVATE SPACE</div></div></button>
+      <button className="sidebar-toggle" title={sidebarCollapsed?t('Mở rộng thanh bên'):t('Thu gọn thanh bên')} aria-label={sidebarCollapsed?t('Mở rộng thanh bên'):t('Thu gọn thanh bên')} onClick={()=>setSidebarCollapsed(value=>!value)}>{sidebarCollapsed?<PanelLeftOpen size={17}/>:<PanelLeftClose size={17}/>}<span>{sidebarCollapsed?'':'Thu gọn'}</span></button>
+      {space==='passwords' ? <><div className="nav-block"><p className="nav-caption">{t("THƯ VIỆN")}</p>
+        <button className={'nav-item '+(tab==='all'?'active':'')} title={t("Tất cả tài khoản")} aria-label={t("Tất cả tài khoản")} aria-current={tab==='all'?'page':undefined} onClick={()=>{setTab('all');setFilter('');}}><LayoutGrid size={17}/><span>{t("Tất cả tài khoản")}</span><span className="nav-count">{snap.accounts.length}</span></button>
+        <div className="nav-categories">{snap.categories.map(c=><button key={c.id} className={'nav-item '+(tab==='category'&&c.id===categoryId?'active':'')} title={c.name} aria-label={c.name} aria-current={tab==='category'&&c.id===categoryId?'page':undefined} onClick={()=>{setTab('category');setCategoryId(c.id);setFilter('');}}><span className="category-symbol" style={{color:c.color}}>{iconView(c.icon)}</span><span>{c.name}</span><span className="nav-count">{snap.accounts.filter(a=>a.categoryId===c.id).length}</span></button>)}</div>
       </div>
+      <button className="nav-item nav-add" title={t("Thêm thư viện")} aria-label={t("Thêm thư viện")} onClick={()=>editCategory()}><FolderPlus size={17}/><span>{t("Thêm thư viện")}</span><Plus size={15}/></button></> : <div className="nav-block"><p className="nav-caption">{t('BỘ SƯU TẬP')}</p><button className={'nav-item '+(tab==='resources'&&!resourceCollection?'active':'')} title={t('Tất cả tài nguyên')} aria-label={t('Tất cả tài nguyên')} onClick={()=>{setTab('resources');setResourceCollection('');}}><BookOpen size={18}/><span>{t('Tất cả tài nguyên')}</span><span className="nav-count">{snap.resources.length}</span></button><div className="nav-categories">{[...new Set(snap.resources.map(item=>item.collection).filter(Boolean))].map(name=><button className={'nav-item '+(tab==='resources'&&resourceCollection===name?'active':'')} key={name} title={name} aria-label={name} onClick={()=>{setTab('resources');setResourceCollection(name);}}><FolderClosed size={17}/><span>{name}</span><span className="nav-count">{snap.resources.filter(item=>item.collection===name).length}</span></button>)}</div></div>}
       <div className="sidebar-bottom"><p className="nav-caption">{t("KHÔNG GIAN")}</p>
-        <button className={'nav-item '+(tab==='backup'?'active':'')} onClick={()=>setTab('backup')}><ArchiveRestore size={18}/>{t("Sao lưu & khôi phục")}</button>
-        <button className={'nav-item '+(tab==='trash'?'active':'')} onClick={()=>setTab('trash')}><Trash2 size={18}/>{t("Thùng rác")} <span className="nav-count">{trashed.length}</span></button>
-        <button className={'nav-item '+(tab==='settings'?'active':'')} onClick={()=>setTab('settings')}><Settings2 size={18}/>{t("Bảo mật & cài đặt")}</button>
+        <button className="nav-item space-switch" title={space==='passwords'?t('Sang Tài nguyên'):t('Sang Mật khẩu')} aria-label={space==='passwords'?t('Sang Tài nguyên'):t('Sang Mật khẩu')} onClick={()=>{setSpace(space==='passwords'?'resources':'passwords');setTab(space==='passwords'?'resources':'all');}}>{space==='passwords'?<BookOpen size={18}/>:<KeyRound size={18}/>}<span>{space==='passwords'?t('Sang Tài nguyên'):t('Sang Mật khẩu')}</span><ArrowRight size={15}/></button>
+        <button className={'nav-item '+(['settings','backup','trash'].includes(tab)?'active':'')} title={t("Cài đặt")} aria-label={t("Cài đặt")} aria-current={['settings','backup','trash'].includes(tab)?'page':undefined} onClick={()=>setTab('settings')}><Settings2 size={18}/><span>{t("Cài đặt")}</span>{trashed.length+snap.resourceTrash.length>0&&<span className="nav-count">{trashed.length+snap.resourceTrash.length}</span>}</button>
         <div className="security-card"><div className="secure-title"><span className="pulse-dot"/>{t("Kho đang mở khóa")}</div><small>{t("Mã hóa đầu cuối · Lưu cục bộ")}</small></div>
         <button className="lock-btn" onClick={lock}><Lock size={16}/>{t("Khóa ngay")}</button>
       </div>
     </aside>}
     <main className={'main-area '+(!status.unlocked?'main-auth':'')}>
-      <header className="topbar"><div className="topbar-left">{status.unlocked?<><span className="breadcrumb">MassKey</span><span className="breadcrumb-divider">/</span><strong>{tab==='settings'?t("Bảo mật"):tab==='backup'?t("Sao lưu"):tab==='trash'?t("Thùng rác"):tab==='category'?selectedCategory?.name:t("My vault")}</strong></>:<><img className="small-logo" src={logo} alt=""/><strong>MassKey Vault</strong></>}</div><div className="topbar-right"><span className="local-tag"><span className="local-dot"/>OFFLINE VAULT</span>{languagePicker}{themeButton}</div></header>
+      <header className="topbar"><div className="topbar-left">{status.unlocked?<><button className="breadcrumb-home" onClick={()=>setSpace('welcome')} aria-label={t('Về màn hình chào')}>MassKey</button><span className="breadcrumb-divider">/</span><strong>{space==='welcome'?t('Hai cánh cửa'):['settings','backup','trash'].includes(tab)?t("Cài đặt"):space==='resources'?'Tài nguyên':tab==='category'?selectedCategory?.name:t("My vault")}</strong></>:<><img className="small-logo" src={logo} alt=""/><strong>MassKey Vault</strong></>}</div><div className="topbar-right">{status.unlocked&&space!=='welcome'&&<button className="topbar-switch" onClick={()=>{setSpace(space==='passwords'?'resources':'passwords');setTab(space==='passwords'?'resources':'all');}}>{space==='passwords'?<BookOpen size={16}/>:<KeyRound size={16}/>}<span>{space==='passwords'?t('Tài nguyên'):t('Mật khẩu')}</span><ArrowRight size={14}/></button>}<span className="local-tag"><span className="local-dot"/>LOCAL VAULT</span>{languagePicker}{themePicker}</div></header>
       {(!status.unlocked) ? <section className="auth-screen"><div className="auth-aurora"/><div className="auth-content"><img src={logo} className="auth-logo" alt="MassKey Vault"/><p className="eyebrow">YOUR SECRETS. YOUR CONTROL.</p><h1>{!status.exists?t("Your vault starts here."):recoverMode?t("Recover your vault."):t("Welcome back.")}</h1><p className="auth-desc">{!status.exists?t("Tạo một không gian riêng tư chỉ bạn có thể mở."):t("Mọi bí mật của bạn đều được mã hóa trên thiết bị này.")}</p>
         <div className="auth-form">
           {recoverMode ? <><label>{t("RECOVERY KEY")}</label><textarea value={secret} onChange={e=>setSecret(e.target.value)} placeholder={t("Nhập Recovery Key đã lưu")} rows={3}/><label>{t("MASTER PASSWORD MỚI")}</label><input type="password" autoComplete="new-password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="Ít nhất 12 ký tự"/><button className="primary wide" disabled={busy} onClick={recover}>{t("Khôi phục quyền truy cập")} <ArrowRight size={17}/></button><button className="plain-link" onClick={()=>setRecoverMode(false)}>{t("Quay lại mở khóa")}</button></>
@@ -366,15 +493,17 @@ function App() {
           {!status.exists && <button className="outline wide auth-import" onClick={openImportPicker}><UploadCloud size={17}/>{t("Tôi có bản sao ZIP — Khôi phục")}</button>}
         </div><div className="auth-proof"><LockKeyhole size={15}/>Zero cloud · Local encryption · Private by design</div>
       </div></section>
-      : <div className="scroll-area">
-        {tab==='trash' ? <div className="workspace animate-enter narrow"><h1>{t('Thùng rác')}</h1><p className="description">{t('Tài khoản trong thùng rác được giữ trong vault mã hóa cho đến khi bạn khôi phục. Không tự xóa.')}</p><div className="account-list">{trashed.map(a=><div className="action-panel" key={a.id}><div><strong>{a.title}</strong><p>{a.username}</p></div><button className="btn-outline" disabled={busy} onClick={()=>doWork(async()=>{await api('restore_account',{id:a.id});await load();alert('Đã khôi phục tài khoản.');})}>{t('Khôi phục')}</button></div>)}</div></div> : tab==='all'||tab==='category' ? <div className="workspace animate-enter">
-          <div className="page-header"><div><p className="eyebrow">PERSONAL PASSWORD MANAGER</p><h1>{tab==='category'?selectedCategory?.name||t("Thư viện"):t("My vault")}<span className="header-dot">.</span></h1><p className="description">{t("Không gian bảo mật dành riêng cho những tài khoản quan trọng.")}</p></div><div className="header-actions">{tab==='category'&&<button title={t("Chỉnh sửa thư viện")} className="btn-outline" onClick={()=>selectedCategory&&editCategory(selectedCategory)}><Pencil size={15}/>{t("Sửa thư viện")}</button>}<button className="primary" onClick={()=>editAccount(null)}><Plus size={17}/>{t("Thêm tài khoản")}</button></div></div>
+      : space==='welcome' ? <section className={'door-screen'+(enteringSpace?' is-entering entering-'+enteringSpace:'')} aria-label="Chọn không gian"><div className="door-intro"><img src={logo} alt=""/><h1>{t('Chọn không gian của bạn.')}</h1><p>{t('Mọi thứ vẫn nằm trong một vault mã hóa. Bước vào nơi bạn cần ngay lúc này.')}</p></div><div className="door-grid"><button className="door door-passwords" disabled={!!enteringSpace} onClick={()=>enterSpace('passwords')}><span className="door-art" aria-hidden="true"><img src={passwordDoor} alt=""/></span><span className="door-body"><strong>{t('Mật khẩu')}</strong><small>{t('Quản lý tài khoản và những thông tin đăng nhập quan trọng.')}</small><span>{snap.accounts.length} {t('tài khoản')} <ArrowRight size={20}/></span></span></button><button className="door door-resources" disabled={!!enteringSpace} onClick={()=>enterSpace('resources')}><span className="door-art" aria-hidden="true"><img src={resourceDoor} alt=""/></span><span className="door-body"><strong>{t('Tài nguyên')}</strong><small>{t('Website, tài liệu và repo GitHub bạn muốn tìm lại.')}</small><span>{snap.resources.length} {t('tài nguyên')} <ArrowRight size={20}/></span></span></button></div></section>
+      : <div className="scroll-area" key={space}>
+        {['settings','backup','trash'].includes(tab)&&<nav className="settings-nav" aria-label={t('Cài đặt')}><button className={tab==='settings'?'active':''} onClick={()=>setTab('settings')}><Settings2 size={17}/>{t('Bảo mật & cài đặt')}</button><button className={tab==='backup'?'active':''} onClick={()=>setTab('backup')}><ArchiveRestore size={17}/>{t('Sao lưu & khôi phục')}</button><button className={tab==='trash'?'active':''} onClick={()=>setTab('trash')}><Trash2 size={17}/>{t('Thùng rác')}{trashed.length+snap.resourceTrash.length>0&&<span>{trashed.length+snap.resourceTrash.length}</span>}</button></nav>}
+        {tab==='resources' ? <ResourceSpace resources={snap.resources} collection={resourceCollection} reload={load} notify={alert} t={t}/> : tab==='trash' ? <div className="workspace animate-enter narrow"><div className="page-header"><div><h1>{t('Thùng rác')}</h1><p className="description">{t('Tài khoản ở đây vẫn nằm trong vault mã hóa. Bạn có thể khôi phục hoặc xóa vĩnh viễn.')}</p></div>{trashed.length>0&&<button className="btn-outline danger-action" disabled={busy} onClick={emptyTrash}><Trash2 size={16}/>{t('Dọn hết thùng rác')} ({trashed.length})</button>}</div><div className="notice-panel"><ShieldCheck size={18}/><p>{t('Xóa vĩnh viễn chỉ xóa khỏi vault hiện tại. Bản sao ZIP hoặc .bak cũ vẫn có thể chứa dữ liệu.')}</p></div><div className="account-list">{trashed.length===0?<div className="empty-state"><Trash2 size={26}/><h3>{t('Thùng rác đang trống')}</h3></div>:trashed.map(a=><div className="action-panel trash-item" key={a.id}><div><strong>{a.title}</strong><p>{a.username}</p></div><div className="trash-actions"><button className="btn-outline" disabled={busy} onClick={()=>doWork(async()=>{await api('restore_account',{id:a.id});await load();alert(t('Đã khôi phục tài khoản.'));})}>{t('Khôi phục')}</button><button className="btn-outline danger-action" disabled={busy} onClick={()=>permanentlyDelete(a)}>{t('Xóa vĩnh viễn')}</button></div></div>)}</div><ResourceTrash items={snap.resourceTrash} reload={load} notify={alert} t={t}/></div> : tab==='all'||tab==='category' ? <div className="workspace animate-enter">
+          <div className="page-header"><div><p className="eyebrow">PERSONAL PASSWORD MANAGER</p><h1>{tab==='category'?selectedCategory?.name||t("Thư viện"):t("My vault")}<span className="header-dot">.</span></h1><p className="description">{t("Không gian bảo mật dành riêng cho những tài khoản quan trọng.")}</p>{tab==='category'&&(categoryActiveCount>0||categoryTrashCount>0)&&<p className="category-blocker">{categoryActiveCount} {t('tài khoản đang dùng')} · {categoryTrashCount} {t('trong thùng rác')}. {t('Chuyển tài khoản đang dùng và xóa vĩnh viễn tài khoản trong thùng rác trước.')}</p>}</div><div className="header-actions">{tab==='category'&&selectedCategory&&<><button title={t("Chỉnh sửa thư viện")} className="btn-outline" onClick={()=>editCategory(selectedCategory)}><Pencil size={15}/>{t("Sửa thư viện")}</button><button className="btn-outline danger-action" onClick={()=>deleteCategory(selectedCategory.id)}><Trash2 size={15}/>{t('Xóa thư viện')}</button></>}<button className="primary" onClick={()=>editAccount(null)}><Plus size={17}/>{t("Thêm tài khoản")}</button></div></div>
           <div className="hero-strip"><div className="hero-icon"><ShieldCheck size={27}/></div><div className="hero-body"><p>{t("ENCRYPTED COLLECTION")}</p><strong>{snap.accounts.length.toString().padStart(2,'0')} <span>{t("tài khoản được bảo vệ")}</span></strong><small>Master password · Argon2id · XChaCha20-Poly1305</small></div><span className="hero-seal"><span className="pulse-dot"/>{t("SECURED LOCALLY")}</span></div>
           <div className="tool-row"><div className="search-wrap"><Search size={19}/><input value={filter} onChange={e=>setFilter(e.target.value)} placeholder={t("Tìm tên dịch vụ, email hoặc website...")}/><span className="search-key">SEARCH</span></div><div className="result-count"><SlidersHorizontal size={17}/>{visibleAccounts.length} {t("tài khoản")}</div></div>
           <div className="section-heading"><h2>{t("TÀI KHOẢN CỦA BẠN")}</h2><span>{tab==='category'?selectedCategory?.name:t("Tất cả danh mục")}</span></div>
-          {visibleAccounts.length ? <div className="account-grid">{visibleAccounts.map((a,i)=>{
+          {visibleAccounts.length ? <div className="account-grid">{visibleAccounts.map(a=>{
             const c=snap.categories.find(cat=>cat.id===a.categoryId);
-            return <button className="account-card" style={{animationDelay:`${Math.min(i,10)*25}ms`}} key={a.id} onClick={()=>showDetail(a)}>
+            return <button className="account-card" key={a.id} onClick={()=>showDetail(a)}>
               <span className="account-avatar" style={{'--avatar-color':c?.color||'#9074e8'} as React.CSSProperties}>{iconView(a.icon||c?.icon)}</span>
               <span className="account-copy"><strong>{a.title}</strong><small>{a.username||t("Chưa có username")}</small><span className="account-category">{c?.name||t("Chưa phân loại")}</span></span><span className="account-arrow"><ArrowRight size={18}/></span>
             </button>})}</div> : <div className="empty-state"><span className="empty-art"><FolderClosed size={33}/></span><h3>{filter?t("Không tìm thấy tài khoản"):t("Chưa có tài khoản nào")}</h3><p>{filter?t("Thử một từ khóa khác."):t("Tạo tài khoản đầu tiên để bắt đầu quản lý.")}</p><button className="btn-outline" onClick={()=>editAccount(null)}><Plus size={16}/>{t("Thêm tài khoản")}</button></div>}
@@ -383,13 +512,13 @@ function App() {
           <div className="action-panel"><div className="panel-icon teal"><UploadCloud size={24}/></div><div><h2>{t("Khôi phục bằng kéo thả")}</h2><p>{t("Thả file .zip vào cửa sổ ứng dụng, hoặc chọn file. Không cần giải nén thủ công.")}</p></div><button className="btn-outline" onClick={openImportPicker}>{t("Chọn file ZIP")} <ArrowRight size={16}/></button></div>
           <div className="notice-panel"><ShieldCheck size={20}/><p>{t("Để khôi phục, bạn cần mật khẩu ZIP và Master Password của vault nguồn (hoặc Recovery Key). Mật khẩu ZIP không thay thế lớp mã hóa bên trong.")}</p></div>
         </div> : <div className="workspace animate-enter narrow"><p className="eyebrow">{t("PROTECTION & PREFERENCES")}</p><h1>{t("Security center")}<span className="header-dot">.</span></h1><p className="description">{t("Quản lý an toàn dữ liệu và quyền truy cập vault.")}</p>
-          <section className="settings-section"><div className="settings-section-title"><Clock3 size={20}/><h2>{t("Tự động khóa")}</h2></div><p>{t("Vault tự khóa khi không có tương tác. Thời gian tối đa: 60 phút.")}</p><div className="settings-row"><label>{t("Thời gian chờ")}</label><select value={settingsLock} onChange={e=>setSettingsLock(Number(e.target.value))}>{[30,60,180,300,600,900,1800,3600].map(n=><option key={n} value={n}>{n<60?`${n} ${t("giây")}`:`${n/60} ${t("phút")}`}</option>)}</select></div><div className="settings-row"><label>{t("Tự xóa clipboard")}</label><select value={settingsClip} onChange={e=>setSettingsClip(Number(e.target.value))}>{[5,10,15,25,30,60,120].map(n=><option key={n} value={n}>{n} {t("giây")}</option>)}</select></div><div className="toggle-settings">
+          <section className="settings-section"><div className="settings-section-title"><Clock3 size={20}/><h2>{t("Tự động khóa")}</h2></div><p>{t("Vault tự khóa khi không có tương tác. Thời gian tối đa: 60 phút.")}</p><div className="settings-row"><label>{t("Thời gian chờ")}</label><select value={settingsLock} onChange={e=>setSettingsLock(Number(e.target.value))}>{[...new Set([settingsLock,30,60,180,300,600,900,1800,3600])].sort((a,b)=>a-b).map(n=><option key={n} value={n}>{n<60?`${n} ${t("giây")}`:n%60===0?`${n/60} ${t("phút")}`:`${n} ${t("giây")}`}</option>)}</select></div><div className="settings-row"><label>{t("Tự xóa clipboard")}</label><select value={settingsClip} onChange={e=>setSettingsClip(Number(e.target.value))}>{[...new Set([settingsClip,5,10,15,25,30,60,120])].sort((a,b)=>a-b).map(n=><option key={n} value={n}>{n} {t("giây")}</option>)}</select></div><div className="toggle-settings">
           <label><span>{t('Khóa khi thu nhỏ')}</span><input type="checkbox" checked={settingsMin} onChange={e=>setSettingsMin(e.target.checked)}/></label>
           <label><span>{t('Yêu cầu Master Password khi xem/copy')}</span><input type="checkbox" checked={settingsReauth} onChange={e=>setSettingsReauth(e.target.checked)}/></label>
           <label><span>{t('Cảnh báo mật khẩu yếu')}</span><input type="checkbox" checked={settingsWarn} onChange={e=>setSettingsWarn(e.target.checked)}/></label>
           <label><span>{t('Vault Health')}</span><input type="checkbox" checked={settingsHealth} onChange={e=>setSettingsHealth(e.target.checked)}/></label>
           </div><button className="primary" onClick={saveSettings} disabled={busy}>{t('Lưu thiết lập')}</button></section>
-          <section className="settings-section"><div className="settings-section-title"><Languages size={20}/><h2>{t('GIAO DIỆN')}</h2></div><div className="settings-row"><label>{t('NGÔN NGỮ')}</label>{languagePicker}</div><div className="settings-row"><label>{t('CHẾ ĐỘ')}</label><button className="btn-outline" onClick={()=>setTheme(v=>v==='dark'?'light':'dark')}>{theme==='dark'?'Dark':'Light'}</button></div></section>
+          <section className="settings-section"><div className="settings-section-title"><Languages size={20}/><h2>{t('GIAO DIỆN')}</h2></div><div className="settings-row"><label>{t('NGÔN NGỮ')}</label>{languagePicker}</div><div className="settings-row"><label>{t('CHẾ ĐỘ')}</label>{themePicker}</div></section>
           <section className="settings-section"><div className="settings-section-title"><Activity size={20}/><h2>{t('Vault Health')}</h2></div>{settingsHealth ? <><div className="health-counters"><div><strong>{health?.weak.length??'—'}</strong>{t('Mật khẩu yếu')}</div><div><strong>{health?.reused.length??'—'}</strong>{t('Mật khẩu trùng')}</div></div>{health && (health.weak.length>0||health.reused.length>0)&&<div className="health-list">{snap.accounts.filter(a=>health.weak.includes(a.id)||health.reused.includes(a.id)).map(a=><button key={a.id} className="health-entry" onClick={()=>showDetail(a)}><span>{a.title}</span><small>{health.reused.includes(a.id)?t('Mật khẩu trùng'):t('Mật khẩu yếu')}</small><ArrowRight size={15}/></button>)}</div>}<button className="btn-outline" onClick={()=>api<HealthReport>('vault_health').then(setHealth).catch(e=>alert(errorText(e),true))}>{t('Kiểm tra Vault Health')}</button></>:<p>Vault Health disabled</p>}</section>
           <section className="settings-section"><div className="settings-section-title"><RefreshCw size={20}/><h2>{t('Emergency Recovery Kit')}</h2></div><p>{t('Chỉ có thể lấy Recovery Key mới sau khi xác thực. Cất bản sao ngoại tuyến.')}</p><p>{t('Không có bản sao cũ vẫn khôi phục được?')}</p><button className="btn-outline" onClick={()=>setRotating(v=>!v)}>{t('Đổi Recovery Key')}</button>{rotating&&<div className="field-stack"><p>{t('Tạo mã mới sẽ vô hiệu hóa Recovery Key cũ.')}</p><input type="password" autoComplete="off" placeholder={t('Master Password để tạo mã mới')} value={rotateMaster} onChange={e=>setRotateMaster(e.target.value)}/><button disabled={!rotateMaster||busy} className="primary" onClick={rotateRecovery}>{t('Tạo Recovery Key mới')}</button></div>}</section>
           <section className="settings-section"><div className="settings-section-title"><KeyRound size={20}/><h2>{t("Đổi Master Password")}</h2></div><p>{t("Không thay đổi Recovery Key. Mật khẩu mới phải từ 12 ký tự.")}</p><div className="field-stack"><input type="password" value={oldPassword} onChange={e=>setOldPassword(e.target.value)} placeholder={t("Mật khẩu hiện tại")}/><input type="password" autoComplete="new-password" value={freshPassword} onChange={e=>setFreshPassword(e.target.value)} placeholder={t("Mật khẩu mới (ít nhất 12 ký tự)")}/><input type="password" autoComplete="new-password" value={freshConfirm} onChange={e=>setFreshConfirm(e.target.value)} placeholder={t("Xác nhận mật khẩu mới")}/></div><button className="btn-outline" disabled={busy} onClick={changeMaster}>{t("Cập nhật mật khẩu")}</button></section>
@@ -399,8 +528,8 @@ function App() {
       {(notice||error) && <div role="status" className={'toast '+(error?'toast-error':'')}><span>{error||notice}</span><button onClick={()=>{setError('');setNotice('');}} aria-label="Đóng"><X size={16}/></button></div>}
     </main>
     {dragging&&<div className="drop-overlay"><UploadCloud size={48}/><h2>{t("Thả bản sao ZIP mã hóa vào đây")}</h2><span>MASSKEY VAULT · SECURE RESTORE</span></div>}
-    {showRecoverySetup && <div className="modal-scrim"><div className="modal-box recovery-modal"><div className="modal-icon"><ShieldCheck size={26}/></div><p className="eyebrow">RECOVERY ACCESS</p><h2>{t("Lưu Recovery Key của bạn.")}</h2><p className="muted">{t("Đây là cơ hội duy nhất để sao chép mã khôi phục. Ai có mã này có thể truy cập vault, hãy cất giữ ngoài thiết bị và không chia sẻ.")}</p><div className="recovery-code">{recoveryValue}</div><button className="btn-outline wide" onClick={()=>copySecret(recoveryValue)}><ClipboardCopy size={17}/>{copied?t('Đã sao chép'):t('Sao chép Recovery Key')}</button><label className="check-row"><input type="checkbox" checked={recoveryConfirmed} onChange={e=>setRecoveryConfirmed(e.target.checked)}/>{t("Tôi đã lưu Recovery Key ở nơi an toàn.")}</label><button className="primary wide" disabled={!recoveryConfirmed} onClick={()=>{setRecoveryValue('');setShowRecoverySetup(false);}}>{t("Tiếp tục vào vault")} <ArrowRight size={17}/></button></div></div>}
-    {modal!=='none' && !showRecoverySetup && <div className="modal-scrim" onMouseDown={e=>{if(e.target===e.currentTarget){setModal('none');setShownPassword('');setDraft(blank);setShowDraftPassword(false);setGeneratedDraft(false);}}}><section className={'modal-box '+(['account','detail'].includes(modal)?'account-modal':'')}><header className="modal-heading"><div><p className="eyebrow">MASSKEY VAULT</p><h2>{modal==='account'?(draft.id?t("Chỉnh sửa tài khoản"):t("Tài khoản mới")):modal==='category'?(categoryDraft.id?t("Chỉnh sửa thư viện"):t("Tạo thư viện mới")):modal==='detail'?selected?.title:modal==='export'?t("Xuất backup mã hóa"):t("Khôi phục dữ liệu")}</h2></div><button className="icon-btn" onClick={()=>{setModal('none');setShownPassword('');setDraft(blank);setShowDraftPassword(false);setGeneratedDraft(false);}} title="Đóng"><X size={20}/></button></header>
+    {showRecoverySetup && <div className="modal-scrim"><div className="modal-box recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-title"><div className="modal-icon"><ShieldCheck size={26}/></div><p className="eyebrow">RECOVERY ACCESS</p><h2 id="recovery-title">{t("Lưu Recovery Key của bạn.")}</h2><p className="muted">{t("Đây là cơ hội duy nhất để sao chép mã khôi phục. Ai có mã này có thể truy cập vault, hãy cất giữ ngoài thiết bị và không chia sẻ.")}</p><div className="recovery-code">{recoveryValue}</div><button className="btn-outline wide" onClick={()=>copySecret(recoveryValue)}><ClipboardCopy size={17}/>{copied?t('Đã sao chép'):t('Sao chép Recovery Key')}</button><label className="check-row"><input type="checkbox" checked={recoveryConfirmed} onChange={e=>setRecoveryConfirmed(e.target.checked)}/>{t("Tôi đã lưu Recovery Key ở nơi an toàn.")}</label><button className="primary wide" disabled={!recoveryConfirmed} onClick={()=>{setRecoveryValue('');setShowRecoverySetup(false);}}>{t("Tiếp tục vào vault")} <ArrowRight size={17}/></button></div></div>}
+    {modal!=='none' && !showRecoverySetup && <div className="modal-scrim" onMouseDown={e=>{if(e.target===e.currentTarget){setModal('none');setShownPassword('');setDraft(blank);setShowDraftPassword(false);setGeneratedDraft(false);}}}><section className={'modal-box '+(['account','detail'].includes(modal)?'account-modal':'')} role="dialog" aria-modal="true" aria-labelledby="modal-title"><header className="modal-heading"><div><p className="eyebrow">MASSKEY VAULT</p><h2 id="modal-title">{modal==='account'?(draft.id?t("Chỉnh sửa tài khoản"):t("Tài khoản mới")):modal==='category'?(categoryDraft.id?t("Chỉnh sửa thư viện"):t("Tạo thư viện mới")):modal==='detail'?selected?.title:modal==='export'?t("Xuất backup mã hóa"):t("Khôi phục dữ liệu")}</h2></div><button className="icon-btn" onClick={()=>{setModal('none');setShownPassword('');setDraft(blank);setShowDraftPassword(false);setGeneratedDraft(false);}} title="Đóng"><X size={20}/></button></header>
       {modal==='account' && <div className="modal-body"><div className="field"><label>{t("TÊN DỊCH VỤ *")}</label><input value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})} placeholder={t("Ví dụ: GitHub, Steam, Ngân hàng...")}/></div>
         <div className="field-row"><div className="field"><label>{t("THƯ VIỆN")}</label><select value={draft.categoryId} onChange={e=>setDraft({...draft,categoryId:e.target.value})}><option value="">{t("Chưa phân loại")}</option>{snap.categories.map(c=><option key={c.id} value={c.id}>{c.icon.startsWith('data:')?'▣':c.icon} {c.name}</option>)}</select></div><div className="field"><label>{t("ICON")}</label><div className="inline-icon-picker"><select value={draft.icon.startsWith('data:')?'CUSTOM':draft.icon} onChange={e=>setDraft({...draft,icon:e.target.value})}>{draft.icon.startsWith('data:')&&<option value="CUSTOM">{t("Custom image")}</option>}{icons.map(i=><option key={i} value={i}>{i}</option>)}</select><button className="btn-outline" title={t('Chọn icon từ máy')} onClick={()=>chooseIcon('account')}><ImagePlus size={16}/></button>{draft.icon.startsWith('data:')&&<span className="icon-preview">{iconView(draft.icon)}</span>}</div></div></div>
         <div className="field"><label>{t("EMAIL / TÊN ĐĂNG NHẬP")}</label><input autoComplete="off" value={draft.username} onChange={e=>setDraft({...draft,username:e.target.value})} placeholder={t("Username hoặc email")}/></div>
