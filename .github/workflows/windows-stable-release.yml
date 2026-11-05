@@ -62,8 +62,12 @@ jobs:
           $files = @(Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe')
           if ($files.Count -ne 1) { throw "Expected exactly one NSIS exe, found $($files.Count)." }
           $installer = $files[0]
-          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  $($installer.Name)" | Out-File -FilePath SHA256SUMS.txt -Encoding ascii
+          New-Item -ItemType Directory -Path 'release-assets' -Force | Out-Null
+          $assetName = $installer.Name.Replace(' ', '.')
+          $assetPath = Join-Path 'release-assets' $assetName
+          Copy-Item -LiteralPath $installer.FullName -Destination $assetPath
+          $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $assetName" | Out-File -FilePath SHA256SUMS.txt -Encoding ascii
 
       - name: Publish GitHub release with installer and checksum
         shell: pwsh
@@ -71,7 +75,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $tag = '${{ github.ref_name }}'
-          $files = @(Get-ChildItem 'src-tauri/target/release/bundle/nsis/*.exe')
+          $files = @(Get-ChildItem 'release-assets/*.exe')
           if ($files.Count -ne 1) { throw 'Installer asset missing.' }
           $assets = @($files[0].FullName, 'SHA256SUMS.txt')
           gh release create $tag @assets --verify-tag --title "MassKey Vault $tag (unsigned)" --notes-file RELEASE_NOTES.md

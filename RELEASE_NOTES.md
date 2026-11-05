@@ -21,7 +21,7 @@
 ## Upgrade without losing your vault
 
 1. Close MassKey Vault. Back up `%APPDATA%\com.masskey.vault\vault.nvault` and `vault.bak` to a separate folder, then verify the copies.
-2. Download the attached `MassKey Vault_1.4.0_x64-setup.exe` and compare its SHA-256 with `SHA256SUMS.txt`.
+2. Download the attached `MassKey.Vault_1.4.0_x64-setup.exe` and compare its SHA-256 with `SHA256SUMS.txt`.
 3. Run Setup as the same Windows user who used the earlier version. The app keeps the same identifier and AppData vault path.
 4. Unlock with your existing Master Password and check your accounts, resources and settings before deleting any old backup.
 
