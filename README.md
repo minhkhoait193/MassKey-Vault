@@ -3,12 +3,12 @@
 **MassKey Vault** is a privacy-focused, offline-first password manager for Windows 10/11. It is built with Tauri 2, Rust, React, and TypeScript, with a customizable interface and encrypted local backups.
 
 > [!WARNING]
-> **v1.4.0 unsigned release — security review incomplete.** This project has not undergone an independent security audit, full end-to-end Windows verification, or code signing. It is **not recommended for important or irreplaceable passwords** yet. A successful build is not proof of security.
+> **v1.4.1 unsigned release — security review incomplete.** This project has not undergone an independent security audit, full end-to-end Windows verification, or code signing. It is **not recommended for important or irreplaceable passwords** yet. A successful build is not proof of security.
 
 ## Download and install (for Windows users)
 
 1. Open the repository's **Releases** page.
-2. Select **v1.4.0** and download the attached Windows **Setup `.exe`** (not "Source code ZIP"). Check its SHA-256 against `SHA256SUMS.txt`.
+2. Select **v1.4.1** and download the attached Windows **Setup `.exe`** (not "Source code ZIP"). Check its SHA-256 against `SHA256SUMS.txt`.
 3. Run the installer and launch **MassKey Vault** from the desktop or Start Menu.
 4. Create a master password (minimum **12 characters**) and **save your recovery key offline**.
 

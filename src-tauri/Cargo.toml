@@ -1,6 +1,6 @@
 [package]
 name = "masskey-vault"
-version = "1.4.0"
+version = "1.4.1"
 description = "MassKey Vault — offline encrypted password vault"
 authors = ["MassKey Vault"]
 edition = "2021"

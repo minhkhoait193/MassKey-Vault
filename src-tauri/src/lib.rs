@@ -398,15 +398,19 @@ fn snapshot(state: State<'_, VaultState>) -> Result<serde_json::Value,String> {
 fn get_password(state: State<'_, VaultState>, account_id: String, reauth_password: Option<String>) -> Result<String,String> {
     let secret = Zeroizing::new(reauth_password.unwrap_or_default());
     with_session(&state, |s| {
-        if s.data.settings.require_reauth {
-            let raw = B64.decode(&s.file.salt).map_err(err)?;
-            let salt: [u8; 16] = raw.as_slice().try_into().map_err(err)?;
-            let key = derive_key(&secret, &salt)?;
-            let verified = bytes32(&open_sealed(&key, &s.file.master_wrap, AAD_MASTER)?)?;
-            if *verified != *s.dek { return Err("Xác thực thất bại".into()); }
-        }
+        if s.data.settings.require_reauth { verify_reauth(s, &secret)?; }
         s.data.accounts.iter().find(|a| a.id == account_id).map(|a| a.password.clone()).ok_or("Không tìm thấy tài khoản".into())
     })
+}
+fn verify_reauth(session: &Session, password: &str) -> Result<(), String> {
+    if password.is_empty() { return Err("Nhập Master Password để xem hoặc sao chép mật khẩu.".into()); }
+    let raw = B64.decode(&session.file.salt).map_err(err)?;
+    let salt: [u8; 16] = raw.as_slice().try_into().map_err(err)?;
+    let key = derive_key(password, &salt)?;
+    let dek = open_sealed(&key, &session.file.master_wrap, AAD_MASTER)
+        .map_err(|_| "Master Password không đúng. Hãy thử lại.".to_string())?;
+    if *bytes32(&dek)? != *session.dek { return Err("Master Password không đúng. Hãy thử lại.".into()); }
+    Ok(())
 }
 #[tauri::command]
 fn upsert_category(app: AppHandle, state: State<'_, VaultState>, id: Option<String>, name: String, icon: String, color: String) -> Result<String,String> {
@@ -998,6 +1002,15 @@ mod tests {
         let (file,_,_) = make_file("MassKey-UAT-Only-2026!", &data).unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_vault(&path,&file).unwrap();
+    }
+    #[test]
+    fn password_reauth_requires_correct_master() {
+        let data = VaultData::default();
+        let (file, dek, _) = make_file("MassKey-test-master-2026", &data).unwrap();
+        let session = Session { dek, data, file, last_activity: Instant::now() };
+        assert_eq!(verify_reauth(&session, "").unwrap_err(), "Nhập Master Password để xem hoặc sao chép mật khẩu.");
+        assert_eq!(verify_reauth(&session, "wrong").unwrap_err(), "Master Password không đúng. Hãy thử lại.");
+        verify_reauth(&session, "MassKey-test-master-2026").unwrap();
     }
     #[test]
     fn category_deletion_waits_for_active_and_trashed_accounts() {
